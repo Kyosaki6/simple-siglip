@@ -1,51 +1,12 @@
 import argparse
-import os
 import sys
-import numpy as np
-import cv2
 
 from src.siglip_engine import SigLIPEngine
+from src.synthetic import generate_dummy_video
 from src.video_processor import VideoProcessor
 from src.video_search import VideoSearchEngine
 
-
-def generate_dummy_video(output_path: str = "sample_data/demo.mp4", duration_sec: int = 6):
-    """Generate a synthetic video with different colored scenes and text."""
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fps = 20
-    total_frames = duration_sec * fps
-    width, height = 320, 240
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    scenes = [
-        ("red scene with an apple", (0, 0, 200)),
-        ("green field with trees", (0, 200, 0)),
-        ("blue ocean with water", (200, 100, 0)),
-    ]
-
-    frames_per_scene = total_frames // len(scenes)
-
-    for i in range(total_frames):
-        scene_idx = min(i // frames_per_scene, len(scenes) - 1)
-        desc, color = scenes[scene_idx]
-
-        frame = np.full((height, width, 3), color, dtype=np.uint8)
-        cv2.putText(
-            frame,
-            desc,
-            (10, height // 2),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        out.write(frame)
-
-    out.release()
-    print(f"Generated synthetic demo video at: {output_path}")
-    return output_path
+__all__ = ["generate_dummy_video", "main"]
 
 
 def main():
