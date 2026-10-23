@@ -1,5 +1,7 @@
 import argparse
+import os
 import sys
+from typing import List, Optional
 
 from src.siglip_engine import SigLIPEngine
 from src.synthetic import generate_dummy_video
@@ -9,7 +11,7 @@ from src.video_search import VideoSearchEngine
 __all__ = ["generate_dummy_video", "main"]
 
 
-def main():
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="SigLIP Video Search & Zero-shot Classifier")
     parser.add_argument("--video", type=str, default=None, help="Path to video file")
     parser.add_argument("--query", type=str, default="blue ocean with water", help="Search query")
@@ -22,37 +24,92 @@ def main():
     parser.add_argument("--fps", type=float, default=1.0, help="Frames sampled per second")
     parser.add_argument("--model", type=str, default="google/siglip-base-patch16-224", help="SigLIP HF model")
     parser.add_argument("--generate-dummy", action="store_true", help="Generate synthetic video to test")
+    parser.add_argument(
+        "--dummy-out",
+        type=str,
+        default=None,
+        help="Output path for generated synthetic dummy video (default: sample_data/demo.mp4)",
+    )
+    parser.add_argument(
+        "--min-gap",
+        type=float,
+        default=2.0,
+        help="Minimum temporal gap in seconds between retrieved moments (NMS)",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    video_path = args.video
-    if args.generate_dummy or not video_path:
-        video_path = generate_dummy_video()
+    if args.dummy_out and not args.generate_dummy:
+        sys.stderr.write("Error: --dummy-out requires --generate-dummy.\n")
+        return 2
 
-    print(f"Initializing SigLIP model: {args.model}...")
-    engine = SigLIPEngine(model_name=args.model)
-    processor = VideoProcessor(target_fps=args.fps)
-    searcher = VideoSearchEngine(engine=engine, processor=processor)
+    if args.video is not None:
+        if not os.path.exists(args.video):
+            sys.stderr.write(f"Error: Video file not found: {args.video}\n")
+            return 2
+        if args.generate_dummy:
+            sys.stderr.write("Error: Cannot specify both --video and --generate-dummy.\n")
+            return 2
+        video_path = args.video
+    elif args.generate_dummy:
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        default_dummy_path = os.path.join(project_dir, "sample_data", "demo.mp4")
+        video_path = os.path.abspath(args.dummy_out) if args.dummy_out else default_dummy_path
+        generate_dummy_video(output_path=video_path)
+    else:
+        sys.stderr.write("Error: Please provide --video <path> or --generate-dummy.\n")
+        parser.print_usage(sys.stderr)
+        return 2
 
-    print(f"Indexing video: {video_path}...")
-    num_frames = searcher.index_video(video_path)
-    print(f"Indexed {num_frames} frames from video.")
+    try:
+        print(f"Initializing SigLIP model: {args.model}...")
+        engine = SigLIPEngine(model_name=args.model)
+        processor = VideoProcessor(target_fps=args.fps)
+        searcher = VideoSearchEngine(engine=engine, processor=processor)
 
-    # 1. Zero-shot classification
-    if args.labels:
-        labels = [l.strip() for l in args.labels.split(",") if l.strip()]
-        print("\n--- Zero-Shot Video Classification ---")
-        rankings = searcher.classify_video_zero_shot(labels)
-        for r in rankings:
-            print(f"  [{r['mean_score']:.4f}] {r['label']} (peak: {r['max_score']:.4f})")
+        print(f"Indexing video: {video_path}...")
+        num_frames = searcher.index_video(video_path)
+        print(f"Indexed {num_frames} frames from video.")
 
-    # 2. Moment search
-    if args.query:
-        print(f"\n--- Text-to-Moment Search for: '{args.query}' ---")
-        results = searcher.search_moments(args.query, top_k=3)
-        for rank, res in enumerate(results, 1):
-            print(f"  #{rank}: Timestamp {res.timestamp:.2f}s | Score: {res.score:.4f} | Frame: {res.frame_idx}")
+        # 1. Zero-shot classification
+        if args.labels:
+            labels = [l.strip() for l in args.labels.split(",") if l.strip()]
+            if labels:
+                rankings = searcher.classify_video_zero_shot(labels)
+                print("\n--- Zero-Shot Video Classification ---")
+                max_label_len = max([len("Label")] + [len(r["label"]) for r in rankings])
+                header = (
+                    f"{'Rank':<5} {'Label':<{max_label_len}} "
+                    f"{'Mean Cos':>10} {'Max Cos':>10} {'Mean Prob':>11} {'Max Prob':>11}"
+                )
+                print(header)
+                print("-" * len(header))
+                for rank, r in enumerate(rankings, 1):
+                    mean_p_pct = f"{r['mean_prob'] * 100:.2f}%"
+                    max_p_pct = f"{r['max_prob'] * 100:.2f}%"
+                    print(
+                        f"{rank:<5} {r['label']:<{max_label_len}} "
+                        f"{r['mean_score']:>10.4f} {r['max_score']:>10.4f} "
+                        f"{mean_p_pct:>11} {max_p_pct:>11}"
+                    )
+
+        # 2. Moment search
+        if args.query and args.query.strip():
+            print(f"\n--- Text-to-Moment Search for: '{args.query.strip()}' ---")
+            results = searcher.search_moments(
+                args.query.strip(), top_k=3, min_gap_sec=args.min_gap
+            )
+            for rank, res in enumerate(results, 1):
+                print(
+                    f"  #{rank}: Timestamp {res.timestamp:.2f}s | "
+                    f"Score: {res.score:.4f} | Frame: {res.frame_idx}"
+                )
+
+        return 0
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
