@@ -22,6 +22,8 @@ Demo Siglip/
 │   └── video_search.py        # Matrix indexing, vector dot product, top-k retrieval
 ├── tests/
 │   └── test_pipeline.py       # Automated unit tests for all components
+├── evaluate.py                # Full synthetic benchmark evaluation runner
+├── eval_results.json          # Machine-readable evaluation benchmark metrics
 ├── app.py                     # Gradio web user interface with video preview
 ├── main.py                    # CLI runner + synthetic video generator
 ├── README.md                  # Quickstart documentation
@@ -250,6 +252,63 @@ User Input Query / Labels
    - For `google/siglip-base-patch16-224` ($D=768$, `float32`):
      $$\text{Size} = 3600 \times 768 \times 4\text{ bytes} \approx 11.06\text{ MB}$$
    - Allows fast, fully in-memory vector search without external vector DB for standard videos.
-2. **Computational Bottleneck**:
-   - Frame extraction and vision transformer forward passes represent $>95\%$ of runtime.
-   - Vector dot product query phase executes in $<2\text{ms}$ on CPU once indexed.
+2. **Computational Bottleneck & Query Latency**:
+   - Frame extraction and vision transformer forward passes represent $>95\%$ of indexing runtime (~1.31s / frame on CPU).
+   - While the raw vector dot product similarity ranking alone executes in $<2\text{ms}$ on CPU once indexed, true end-to-end query latency includes text tokenization and text transformer forward pass (~100–260 ms on CPU). In empirical benchmarks (`evaluate.py`), average end-to-end query latency measures ~477.54 ms (reflecting CPU text encoding ~263.27 ms + ranking overhead).
+
+---
+
+## 8. Empirical Benchmark Evaluation & Verification
+
+Benchmark evaluations are executed via `evaluate.py` using `google/siglip-base-patch16-224` on CPU (`torch.float32`), tested on an 8-scene synthetic multi-domain video (24.0s duration, 24 natural queries, 4 negative distractors) under clean visual settings (`clean_no_overlay`, `--with-text-overlay=False`).
+
+### 8.1. Text-to-Moment Retrieval Performance
+
+| Metric | Measured Value | Description |
+|---|---|---|
+| **Recall@1 (R@1)** | **87.50%** (21/24) | Proportion of queries where top-1 timestamp falls within target half-open interval $[t_{\text{start}}, t_{\text{end}})$ |
+| **Recall@3 (R@3)** | **91.67%** (22/24) | Target interval hit within top-3 predicted timestamps |
+| **Recall@5 (R@5)** | **91.67%** (22/24) | Target interval hit within top-5 predicted timestamps |
+| **Mean Reciprocal Rank (MRR)** | **0.8958** | Mean reciprocal rank of the first correct scene interval match |
+| **Mean Absolute Error (MAE to Interval)** | **1.12s** | Mean temporal distance to the scene interval $[t_{\text{start}}, t_{\text{end}})$ (0.0s if inside) |
+| **Mean Absolute Error (MAE to Center)** | **2.08s** | Mean absolute temporal distance to the symmetric center of the target scene |
+| **Hit Rate ($\Delta t_{\text{interval}} = 0.0\text{s}$)** | **87.50%** (21/24) | Predicted timestamp falls strictly within target scene interval |
+| **Hit Rate ($\Delta t_{\text{interval}} \le 1.0\text{s}$)** | **87.50%** (21/24) | Distance to target scene interval is within 1.0 second |
+| **Hit Rate ($\Delta t_{\text{interval}} \le 2.0\text{s}$)** | **87.50%** (21/24) | Distance to target scene interval is within 2.0 seconds |
+| **Hit Rate ($\Delta t_{\text{center}} \le 1.0\text{s}$)** | **54.17%** (13/24) | Temporal distance to scene center is within 1.0 second |
+| **Hit Rate ($\Delta t_{\text{center}} \le 2.0\text{s}$)** | **87.50%** (21/24) | Temporal distance to scene center is within 2.0 seconds |
+| **Average Query Latency** | **477.54 ms** | End-to-end CPU query latency (text encoding ~263.27 ms + vector similarity ranking) |
+
+### 8.2. Zero-Shot Video Classification
+
+Evaluated across 12 candidate classes (8 ground-truth scenes + 4 negative distractors):
+
+| Metric | Measured Value | Description |
+|---|---|---|
+| **Scene Top-1 Accuracy** | **100.00%** (8/8) | All test scenes correctly identified by top-1 category |
+| **Scene Top-3 Accuracy** | **100.00%** (8/8) | Ground-truth class present in top-3 candidates |
+| **Average True Label Score** | **-0.0357** | Mean cosine similarity for ground truth categories |
+| **Average Distractor Score** | **-0.0499** | Mean cosine similarity for distractor categories |
+| **Semantic Separation Margin** | **+0.0142** | Mean cosine separation margin between true and distractor labels |
+| **Native SigLIP Sigmoid Probability (True)** | **0.58%** (0.0058) | Calibrated pairwise sigmoid probability $\sigma(\tau \mathbf{u}^\top \mathbf{v} + b)$ per scene |
+| **Native SigLIP Sigmoid Probability (False)** | **0.00%** (0.0000) | Distractor categories fully suppressed to 0.00% |
+| **Global Video True Probability** | **0.04%** (0.0004) | Mean calibrated sigmoid probability over entire video |
+| **Global Video Distractor Probability** | **0.00%** (0.0000) | Mean calibrated distractor probability over entire video |
+| **Global Probability Separation Margin** | **+0.04%** (0.0004) | Calibrated margin on whole-video aggregation |
+
+### 8.3. FPS Sampling Rate Ablation Study
+
+Sensitivity across frame extraction rates on 24.0s benchmark video:
+
+| Target FPS | Frames Indexed | Indexing Time | Throughput | Recall@1 | MAE to Interval | MAE to Center |
+|---|---|---|---|---|---|---|
+| **0.5 FPS** | 12 frames | 11.09s (ext: 0.14s, enc: 10.96s) | 1.08 frames/s | **87.50%** | **1.08s** | **1.96s** |
+| **1.0 FPS** | 24 frames | 26.11s (ext: 0.16s, enc: 25.95s) | 0.92 frames/s | **87.50%** | **1.12s** | **2.08s** |
+| **2.0 FPS** | 48 frames | 52.31s (ext: 0.33s, enc: 51.98s) | 0.92 frames/s | **100.00%** | **0.00s** | **1.19s** |
+
+### 8.4. Historical Note on OCR Text Leakage Artifact
+
+> **Historical Note (OCR Text Leakage vs. Clean Visual Benchmark):**
+> Initial exploratory reports recorded 100.00% Recall@1 and 100.00% Hit Rate across all sampling rates (including 0.5 FPS). Auditing the synthetic generator revealed that previous test videos drew category names (`sc["category"]`) directly onto synthetic frames via `cv2.putText()`. Because SigLIP incorporates multimodal OCR capabilities learned during pre-training on web image-text pairs, the model effectively read the text labels rather than performing pure visual grounding.
+> 
+> With the introduction of `--with-text-overlay=False` (`clean_no_overlay` mode), benchmark frames contain only raw visual content. The honest visual retrieval performance is measured at **87.50% R@1** at 0.5 FPS and 1.0 FPS, scaling to **100.00% R@1** at 2.0 FPS. The OCR leakage baseline can be explicitly reproduced using the `--with-text-overlay` flag in `evaluate.py`.
