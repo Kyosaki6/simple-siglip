@@ -50,9 +50,19 @@ python3 main.py --video path/to/your_video.mp4 --query "a person driving a car" 
 python3 main.py --video path/to/your_video.mp4 --labels "action movie,sports game,cooking tutorial"
 ```
 
-### 6. Chạy đánh giá toàn diện mô hình (Full Evaluation Benchmark)
+### 6. Phân loại video với Linear Adapter đã huấn luyện
+```bash
+python3 main.py --video sample_data/demo.mp4 --adapter-checkpoint checkpoints/adapter_msad_base224.pt --labels "fighting,theft"
+```
+
+### 7. Chạy đánh giá toàn diện mô hình (Full Evaluation Benchmark)
 ```bash
 python3 evaluate.py
+```
+
+### 8. Đánh giá trên dữ liệu camera giám sát thực tế (Real Surveillance Benchmark)
+```bash
+python3 evaluate_real.py
 ```
 
 ## Kết quả đánh giá mô hình toàn diện (Full Model Evaluation)
@@ -144,3 +154,61 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 
 - **Mất mát Sigmoid (BCE Loss)**: Thay vì dùng Softmax chuẩn hoá trên toàn bộ batch (đòi hỏi batch size cực lớn và global communication), SigLIP coi mỗi cặp ảnh-văn bản là một bài toán phân loại nhị phân độc lập.
 - **Hiệu quả cao khi scale**: Tối ưu tốc độ huấn luyện và bộ nhớ, chất lượng embedding mạnh hơn CLIP ở cùng quy mô tham số.
+
+---
+
+## Đánh giá trên dữ liệu Camera Giám sát Thực tế (Real-World Surveillance Evaluation)
+
+Đánh giá thực nghiệm hiệu năng của mô hình SigLIP trên tập dữ liệu camera giám sát thực tế MSAD (240 video, 5,331 khung hình tại 1.0 FPS) qua 11 lớp hành vi/bất thường an ninh, sử dụng phương pháp 5-Fold Stratified Group K-Fold (chia nhóm theo góc máy camera nhằm tránh rò rỉ dữ liệu nền).
+
+### 1. So sánh Macro-F1: Zero-Shot vs. Prompt-Ensemble vs. Linear Adapter
+
+| Phương pháp | Macro-F1 | Mức tăng so với Zero-Shot | Đánh giá |
+|---|---|---|---|
+| **Zero-Shot Baseline** | **12.53%** (0.1253) | — | Phân loại trực tiếp bằng cosine similarity giữa video embedding và tên nhãn |
+| **Prompt-Ensemble** | **23.38%** (0.2338) | **+10.85%** (+0.1085) | Trung bình L2-normalized embedding qua 4 mẫu prompt giám sát chuẩn |
+| **Linear Adapter (5-fold OOF)** | **19.99%** (0.1999) | **+7.46%** (+0.0746) | Đầu phân loại tuyến tính huấn luyện trên vector video mean-pooled |
+
+- **Kiểm định thống kê Bootstrap ghép cặp (Paired Bootstrap 95% CI)**:
+  - Khoảng tin cậy 95% của độ chênh lệch Macro-F1 $(\text{Adapter} - \text{Zero-Shot})$: **[0.0242, 0.1232]** ($[+2.42\%, +12.32\%]$).
+  - Vì ngưỡng dưới $0.0242 > 0$, mức cải thiện mang ý nghĩa thống kê ở mức $\alpha = 0.05$.
+  - **Kết luận chính thức (Formal Verdict)**: `gain` (xác nhận cải thiện có ý nghĩa thống kê vượt trội so với baseline Zero-Shot).
+
+### 2. Chi tiết hiệu năng theo từng lớp bất thường (Per-Class F1 Score)
+
+| Lớp bất thường (MSAD 11 Classes) | Zero-Shot F1 | Prompt-Ensemble F1 | Linear Adapter F1 |
+|---|---|---|---|
+| **Assault** | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) |
+| **Explosion** | 0.00% (0.0000) | 28.57% (0.2857) | 0.00% (0.0000) |
+| **Fighting** | 14.29% (0.1429) | 0.00% (0.0000) | 0.00% (0.0000) |
+| **Fire** | 21.43% (0.2143) | 57.14% (0.5714) | 48.65% (0.4865) |
+| **Object_falling** | 8.00% (0.0800) | 18.18% (0.1818) | 0.00% (0.0000) |
+| **People_falling** | 8.51% (0.0851) | 23.53% (0.2353) | 52.35% (0.5235) |
+| **Robbery** | 28.43% (0.2843) | 37.91% (0.3791) | 67.53% (0.6753) |
+| **Shooting** | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) |
+| **Traffic_accident** | 26.42% (0.2642) | 33.33% (0.3333) | 51.33% (0.5133) |
+| **Vandalism** | 0.00% (0.0000) | 24.00% (0.2400) | 0.00% (0.0000) |
+| **Water_incident** | 30.77% (0.3077) | 34.48% (0.3448) | 0.00% (0.0000) |
+| **Macro-F1 Trung bình** | **12.53% (0.1253)** | **23.38% (0.2338)** | **19.99% (0.1999)** |
+
+### 3. Thử nghiệm chuyển giao liên miền trên tập STEC (STEC Cross-Domain Transfer Probe)
+
+Đánh giá thăm dò trên 14 video camera giám sát thực tế từ tập dữ liệu STEC nhằm kiểm nghiệm khả năng khái quát hoá liên miền của mô hình sang môi trường camera giao thông/đô thị tại Việt Nam.
+
+> **Tuyên bố giới hạn mẫu nhỏ (Small-Sample Disclaimer)**:
+> Kích thước mẫu thử nghiệm rất nhỏ ($n < 10$ cho mỗi lớp, tổng $n = 14$ video, trong đó 11 video ánh xạ được sang các lớp MSAD tương ứng). Kết quả chỉ mang tính chất thăm dò khám phá (exploratory probe) và **không có ý nghĩa khẳng định về mặt thống kê**.
+
+| Hành vi (STEC) | Lớp ánh xạ (MSAD) | Số mẫu ($n$) | Zero-Shot Accuracy (Wilson 95% CI) | Linear Adapter Accuracy (Wilson 95% CI) |
+|---|---|---|---|---|
+| `fighting` | Fighting | 5 | 0.00% (0/5) [0.00%, 43.45%] | 0.00% (0/5) [0.00%, 43.45%] |
+| `people_falling` | People_falling | 4 | 0.00% (0/4) [0.00%, 48.99%] | 25.00% (1/4) [4.56%, 69.94%] |
+| `theft` | Robbery | 2 | 100.00% (2/2) [34.24%, 100.00%] | 0.00% (0/2) [0.00%, 65.76%] |
+| **Tổng các lớp ánh xạ** | — | **11** | **18.18% (2/11)** | **9.09% (1/11)** |
+
+### 4. Thời gian thực thi & Hiệu năng phần cứng (Hardware Runtime & Latency)
+
+- **Thời gian trích xuất đặc trưng**: ~5.7s / video (~0.27s / frame trên CPU với `torch.float32`; tổng thời gian xử lý 5,331 frames của 240 video là ~1,439s).
+- **Thời gian huấn luyện Linear Adapter**: **~5.0s** cho toàn bộ 240 video trên CPU (200 epochs tối ưu hóa L-BFGS trên các vector đặc trưng đã cache).
+- **Độ trễ suy luận (Inference Latency)**: **< 2 ms** trên mỗi video (thực hiện phép nhân ma trận qua linear head trên vector embedding mean-pooled).
+
+> **Tuân thủ quyền riêng tư (Privacy Compliance Guardrail)**: Báo cáo này tuyệt đối không lưu trữ, trích xuất hoặc hiển thị bất kỳ khung hình video, ảnh chụp màn hình hay khuôn mặt cá nhân nào từ các tập dữ liệu camera giám sát thực tế (MSAD, STEC).

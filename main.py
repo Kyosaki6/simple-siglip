@@ -1,14 +1,44 @@
 import argparse
 import os
 import sys
-from typing import List, Optional
+from typing import Dict, List, Optional
 
+from src.heads import load_head, pool_video_embedding, predict
 from src.siglip_engine import SigLIPEngine
 from src.synthetic import generate_dummy_video
 from src.video_processor import VideoProcessor
 from src.video_search import VideoSearchEngine
 
 __all__ = ["generate_dummy_video", "main"]
+
+
+def _resolve_adapter_classes(
+    user_labels: List[str],
+    class_names: List[str],
+    label_map: Optional[Dict[str, str]] = None,
+) -> List[str]:
+    mapping = label_map or {}
+    matched: List[str] = []
+    for raw_label in user_labels:
+        cleaned = raw_label.strip()
+        if not cleaned:
+            continue
+        target: Optional[str] = None
+        if cleaned in class_names:
+            target = cleaned
+        elif cleaned.lower() in mapping and mapping[cleaned.lower()] in class_names:
+            target = mapping[cleaned.lower()]
+        elif cleaned in mapping and mapping[cleaned] in class_names:
+            target = mapping[cleaned]
+        else:
+            norm_label = cleaned.lower().replace(" ", "_")
+            for c in class_names:
+                if c.lower() == norm_label or c.lower().replace("_", " ") == cleaned.lower():
+                    target = c
+                    break
+        if target is not None and target not in matched:
+            matched.append(target)
+    return matched if matched else list(class_names)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -20,6 +50,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=str,
         default="red scene with an apple,green field with trees,blue ocean with water,car on road",
         help="Comma-separated labels for zero-shot classification",
+    )
+    parser.add_argument(
+        "--adapter-checkpoint",
+        type=str,
+        default=None,
+        help="Path to trained linear adapter checkpoint (.pt/.npz)",
     )
     parser.add_argument("--fps", type=float, default=1.0, help="Frames sampled per second")
     parser.add_argument("--model", type=str, default="google/siglip-base-patch16-224", help="SigLIP HF model")
@@ -61,6 +97,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_usage(sys.stderr)
         return 2
 
+    if args.adapter_checkpoint is not None and not os.path.exists(args.adapter_checkpoint):
+        raise FileNotFoundError(f"Adapter checkpoint not found: {args.adapter_checkpoint}")
+
     try:
         print(f"Initializing SigLIP model: {args.model}...")
         engine = SigLIPEngine(model_name=args.model)
@@ -71,8 +110,41 @@ def main(argv: Optional[List[str]] = None) -> int:
         num_frames = searcher.index_video(video_path)
         print(f"Indexed {num_frames} frames from video.")
 
-        # 1. Zero-shot classification
-        if args.labels:
+        if args.adapter_checkpoint:
+            head, meta = load_head(args.adapter_checkpoint)
+            class_names: List[str] = meta["class_names"]
+            label_map: Dict[str, str] = meta.get("label_map") or {}
+
+            raw_labels = [l.strip() for l in args.labels.split(",") if l.strip()] if args.labels else []
+            eval_classes = _resolve_adapter_classes(raw_labels, class_names, label_map)
+
+            pooled_emb = pool_video_embedding(searcher.frame_embeddings, mode="mean")
+            preds, probs = predict(head, pooled_emb.unsqueeze(0))
+
+            print("\n--- Trained Linear Adapter Video Classification ---")
+            print(f"Checkpoint: {args.adapter_checkpoint} | Total classes: {len(class_names)}")
+            print("Note: Scores are probabilities derived from trained linear adapter head.")
+
+            rankings = []
+            for c in eval_classes:
+                idx = class_names.index(c)
+                p = float(probs[0, idx].item())
+                rankings.append({"class": c, "prob": p})
+            rankings.sort(key=lambda x: x["prob"], reverse=True)
+
+            max_class_len = max([len("Class / Label")] + [len(r["class"]) for r in rankings])
+            header = f"{'Rank':<5} {'Class / Label':<{max_class_len}} {'Adapter Prob':>14}"
+            print(header)
+            print("-" * len(header))
+            for rank, r in enumerate(rankings, 1):
+                p_pct = f"{r['prob'] * 100:.2f}%"
+                print(f"{rank:<5} {r['class']:<{max_class_len}} {p_pct:>14}")
+
+            top_idx = int(preds[0].item())
+            top_class = class_names[top_idx]
+            top_prob = float(probs[0, top_idx].item())
+            print(f"\nOverall Top Prediction (Checkpoint): {top_class} ({top_prob * 100:.2f}%)")
+        elif args.labels:
             labels = [l.strip() for l in args.labels.split(",") if l.strip()]
             if labels:
                 rankings = searcher.classify_video_zero_shot(labels)
