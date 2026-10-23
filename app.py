@@ -133,8 +133,13 @@ def _validate_video(video_path: str, fps: float) -> Optional[str]:
 
 
 def process_video_and_search(
-    video_file: Any, query_text: str, fps: float, model_name: str, top_k: int, min_gap_sec: float = 2.0
-):
+    video_file: Any,
+    query_text: str,
+    fps: float,
+    model_name: str,
+    top_k: int,
+    min_gap_sec: float = 2.0,
+) -> Tuple[str, List[Any], Optional[pd.DataFrame], Optional[str]]:
     if not query_text or not query_text.strip():
         return "❌ Vui lòng nhập câu truy vấn tìm kiếm (Search query cannot be empty).", [], None, None
     clean_query = query_text.strip()
@@ -174,7 +179,9 @@ def process_video_and_search(
     return msg, gallery, pd.DataFrame(summary), clip_path
 
 
-def classify_video(video_file: Any, labels_str: str, fps: float, model_name: str):
+def classify_video(
+    video_file: Any, labels_str: str, fps: float, model_name: str
+) -> Tuple[str, Optional[pd.DataFrame]]:
     labels = [l.strip() for l in (labels_str or "").split(",") if l.strip()]
     if not labels:
         return "❌ Vui lòng cung cấp ít nhất một nhãn phân loại hợp lệ (Please provide at least one valid label).", None

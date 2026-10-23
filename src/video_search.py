@@ -24,7 +24,7 @@ class VideoSearchEngine:
         self,
         engine: Optional[SigLIPEngine] = None,
         processor: Optional[VideoProcessor] = None,
-    ):
+    ) -> None:
         self.engine = engine or SigLIPEngine()
         self.processor = processor or VideoProcessor(target_fps=1.0)
 

@@ -130,12 +130,14 @@ def _create_synthetic_video(
 ) -> str:
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(file_path, fourcc, float(fps), (width, height))
-    total_frames = int(round(fps * duration_sec))
-    for i in range(total_frames):
-        color = (int((i * 17) % 256), int((i * 31) % 256), int((i * 53) % 256))
-        frame = np.full((height, width, 3), color, dtype=np.uint8)
-        out.write(frame)
-    out.release()
+    try:
+        total_frames = int(round(fps * duration_sec))
+        for i in range(total_frames):
+            color = (int((i * 17) % 256), int((i * 31) % 256), int((i * 53) % 256))
+            frame = np.full((height, width, 3), color, dtype=np.uint8)
+            out.write(frame)
+    finally:
+        out.release()
     return file_path
 
 
@@ -220,12 +222,14 @@ class TestClipVideo(unittest.TestCase):
 
             cap = cv2.VideoCapture(out_clip)
             frame_count = 0
-            while True:
-                ret, _ = cap.read()
-                if not ret:
-                    break
-                frame_count += 1
-            cap.release()
+            try:
+                while True:
+                    ret, _ = cap.read()
+                    if not ret:
+                        break
+                    frame_count += 1
+            finally:
+                cap.release()
             self.assertEqual(frame_count, 10)
 
     def test_clip_video_invalid_ranges(self) -> None:
@@ -555,13 +559,17 @@ class TestSyntheticGeneration(unittest.TestCase):
             )
 
             cap_no = cv2.VideoCapture(p_no_text)
-            ret_no, frame_no = cap_no.read()
-            cap_no.release()
+            try:
+                ret_no, frame_no = cap_no.read()
+            finally:
+                cap_no.release()
             self.assertTrue(ret_no)
 
             cap_with = cv2.VideoCapture(p_with_text)
-            ret_with, frame_with = cap_with.read()
-            cap_with.release()
+            try:
+                ret_with, frame_with = cap_with.read()
+            finally:
+                cap_with.release()
             self.assertTrue(ret_with)
 
             header_no = frame_no[10:45, 10:200]

@@ -13,7 +13,7 @@ DEFAULT_FALLBACK_FPS: float = 25.0
 class VideoProcessor:
     """Extract and sample frames from video files with timestamp tracking."""
 
-    def __init__(self, target_fps: float = 1.0, max_frames: Optional[int] = None):
+    def __init__(self, target_fps: float = 1.0, max_frames: Optional[int] = None) -> None:
         """
         Args:
             target_fps: Number of frames to extract per second of video.
