@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -13,7 +13,7 @@ class SigLIPEngine:
         model_name: str = "google/siglip-base-patch16-224",
         device: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
-    ):
+    ) -> None:
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -30,6 +30,15 @@ class SigLIPEngine:
             dtype=self.dtype,
         ).to(self.device)
         self.model.eval()
+
+    @staticmethod
+    def _pool_features(features: Union[torch.Tensor, Any]) -> torch.Tensor:
+        """Extract pooled feature tensor from model output."""
+        if hasattr(features, "pooler_output") and features.pooler_output is not None:
+            features = features.pooler_output
+        elif not isinstance(features, torch.Tensor):
+            features = features[0]
+        return features
 
     @torch.no_grad()
     def encode_images(
@@ -48,10 +57,7 @@ class SigLIPEngine:
                 device=self.device, dtype=self.dtype
             )
             features = self.model.get_image_features(**inputs)
-            if hasattr(features, "pooler_output") and features.pooler_output is not None:
-                features = features.pooler_output
-            elif not isinstance(features, torch.Tensor):
-                features = features[0]
+            features = self._pool_features(features)
             features = F.normalize(features, p=2, dim=-1)
             all_embeds.append(features.cpu())
 
@@ -68,37 +74,44 @@ class SigLIPEngine:
         Returns:
             Tensor of shape (M, feature_dim), L2-normalized.
         """
+        if not texts:
+            return torch.empty((0, self.model.config.text_config.hidden_size))
+
         inputs = self.processor(
-            text=texts, padding="max_length", return_tensors="pt"
+            text=texts,
+            padding="max_length",
+            truncation=True,
+            max_length=64,
+            return_tensors="pt",
         ).to(device=self.device)
         features = self.model.get_text_features(**inputs)
-        if hasattr(features, "pooler_output") and features.pooler_output is not None:
-            features = features.pooler_output
-        elif not isinstance(features, torch.Tensor):
-            features = features[0]
+        features = self._pool_features(features)
         features = F.normalize(features, p=2, dim=-1)
         return features.cpu()
 
     @torch.no_grad()
-    def compute_zero_shot_logits(
-        self, images: List[Image.Image], candidate_labels: List[str]
-    ) -> torch.Tensor:
+    def score_logits(
+        self, image_embeds: torch.Tensor, text_embeds: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute SigLIP zero-shot probabilities using SigLIP's learned temperature and bias.
-        SigLIP uses sigmoid activation instead of CLIP's softmax:
-            P(image, text) = sigmoid(scale * (image @ text.T) + bias)
+        Compute cosine similarities and calibrated SigLIP sigmoid probabilities.
+
+        Args:
+            image_embeds: Tensor of shape (N, D), L2-normalized image embeddings.
+            text_embeds: Tensor of shape (M, D), L2-normalized text embeddings.
 
         Returns:
-            Tensor of shape (num_images, num_labels) with sigmoid probabilities in [0, 1].
+            Tuple of:
+                similarities: Tensor of shape (N, M), cosine similarity in float32.
+                probabilities: Tensor of shape (N, M), sigmoid probability in [0, 1] in float32.
         """
-        inputs = self.processor(
-            text=candidate_labels,
-            images=images,
-            padding="max_length",
-            return_tensors="pt",
-        ).to(device=self.device)
+        target_device = image_embeds.device
+        img = image_embeds.to(device=target_device, dtype=torch.float32)
+        txt = text_embeds.to(device=target_device, dtype=torch.float32)
+        similarities = img @ txt.T
 
-        outputs = self.model(**inputs)
-        logits_per_image = outputs.logits_per_image
-        probs = torch.sigmoid(logits_per_image)
-        return probs.cpu()
+        scale = self.model.logit_scale.to(device=target_device, dtype=torch.float32).exp()
+        bias = self.model.logit_bias.to(device=target_device, dtype=torch.float32)
+
+        probabilities = torch.sigmoid(scale * similarities + bias)
+        return similarities, probabilities

@@ -39,9 +39,11 @@ Thumbs.db
 *.bin
 *.safetensors
 *.onnx
+*.npz
 checkpoints/
 models/
 .cache/
+cache/
 hf_cache/
 
 # Runtime outputs & temporary clips
@@ -51,3 +53,13 @@ runs/
 temp/
 tmp/
 *.log
+tests/*.mp4
+eval_real_results.json
+
+# Local datasets
+data/
+dataset/
+datasets/
+MSAD*/
+Data_stec*/
+stec*/
