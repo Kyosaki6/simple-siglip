@@ -16,6 +16,7 @@ from src.heads import load_head
 from src.metrics import (
     STEC_TO_MSAD,
     evaluate_stec_probe,
+    paired_bootstrap_macro_f1_diff,
     paired_bootstrap_test,
     wilson_score_interval,
 )
@@ -79,6 +80,16 @@ class TestStatisticalMetrics(unittest.TestCase):
         self.assertGreater(ci_low, 0.0)
         self.assertGreaterEqual(ci_high, ci_low)
 
+
+    def test_paired_bootstrap_generic_is_antisymmetric(self) -> None:
+        y_true = np.array([0, 1, 0, 1, 0, 1, 0, 1] * 5)
+        y_good = y_true.copy()
+        y_bad = 1 - y_true
+        d_ab, lo_ab, hi_ab = paired_bootstrap_macro_f1_diff(y_true, y_good, y_bad, 2, n_resamples=100, seed=1)
+        d_ba, lo_ba, hi_ba = paired_bootstrap_macro_f1_diff(y_true, y_bad, y_good, 2, n_resamples=100, seed=1)
+        self.assertAlmostEqual(d_ab, -d_ba)
+        self.assertAlmostEqual(lo_ab, -hi_ba, places=3)
+        self.assertAlmostEqual(hi_ab, -lo_ba, places=3)
 
 class TestEvaluateRealPipeline(unittest.TestCase):
     def test_cli_argument_parsing(self) -> None:
@@ -167,6 +178,11 @@ class TestEvaluateRealPipeline(unittest.TestCase):
             self.assertIn("adapter", res["msad_5fold_pooled_macro_f1"])
             self.assertIn("bootstrap_ci_adapter_minus_zero_shot", res)
             self.assertIn("verdict", res)
+            self.assertIn("pairwise_bootstrap", res)
+            self.assertEqual(
+                set(res["pairwise_bootstrap"]),
+                {"prompt_ensemble_minus_zero_shot", "adapter_minus_prompt_ensemble"},
+            )
             self.assertIn(res["verdict"], ("gain", "no_gain"))
             self.assertIn("stec_cross_probe", res)
             self.assertIn("per_class_metrics", res)

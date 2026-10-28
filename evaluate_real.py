@@ -25,6 +25,7 @@ from src.heads import (
 from src.metrics import (
     STEC_TO_MSAD,
     evaluate_stec_probe,
+    paired_bootstrap_macro_f1_diff,
     paired_bootstrap_test,
     wilson_score_interval,
 )
@@ -155,6 +156,15 @@ def evaluate_surveillance(
         y_true=y_true, y_adapter=y_pred_adapter, y_zero_shot=y_pred_zs, num_classes=num_classes, seed=args.seed
     )
     verdict = "gain" if (diff >= 0.05 and ci_lower > 0) else "no_gain"
+    pairwise: Dict[str, Dict[str, Any]] = {}
+    for name, (y_a, y_b) in {
+        "prompt_ensemble_minus_zero_shot": (y_pred_ens, y_pred_zs),
+        "adapter_minus_prompt_ensemble": (y_pred_adapter, y_pred_ens),
+    }.items():
+        d, lo, hi = paired_bootstrap_macro_f1_diff(
+            y_true=y_true, y_a=y_a, y_b=y_b, num_classes=num_classes, seed=args.seed
+        )
+        pairwise[name] = {"diff": round(d, 4), "ci_95": [lo, hi], "significant": bool(lo > 0 or hi < 0)}
 
     # Train final adapter head on all MSAD samples & save checkpoint
     final_head, _ = train_head(
@@ -198,6 +208,7 @@ def evaluate_surveillance(
         },
         "bootstrap_ci_adapter_minus_zero_shot": [ci_lower, ci_upper],
         "verdict": verdict,
+        "pairwise_bootstrap": pairwise,
         "stec_cross_probe": stec_probe,
         "per_class_metrics": per_class_metrics,
         "n_videos": len(msad_samples),

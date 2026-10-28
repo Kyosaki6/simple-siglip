@@ -26,6 +26,24 @@ def wilson_score_interval(k: int, n: int, confidence: float = 0.95) -> Tuple[flo
     return round(max(0.0, center - half_width), 4), round(min(1.0, center + half_width), 4)
 
 
+def paired_bootstrap_macro_f1_diff(
+    y_true: np.ndarray,
+    y_a: np.ndarray,
+    y_b: np.ndarray,
+    num_classes: int,
+    n_resamples: int = 1000,
+    seed: int = 0,
+) -> Tuple[float, float, float]:
+    """Paired bootstrap difference and 95% CI for macro_f1(y_a) - macro_f1(y_b)."""
+    n_samples = len(y_true)
+    diff = macro_f1(y_true, y_a, num_classes) - macro_f1(y_true, y_b, num_classes)
+    rng = np.random.default_rng(seed)
+    deltas = np.zeros(n_resamples, dtype=np.float64)
+    for b in range(n_resamples):
+        idx = rng.choice(n_samples, size=n_samples, replace=True)
+        deltas[b] = macro_f1(y_true[idx], y_a[idx], num_classes) - macro_f1(y_true[idx], y_b[idx], num_classes)
+    return float(diff), round(float(np.percentile(deltas, 2.5)), 4), round(float(np.percentile(deltas, 97.5)), 4)
+
 def paired_bootstrap_test(
     y_true: np.ndarray,
     y_adapter: np.ndarray,
@@ -35,15 +53,7 @@ def paired_bootstrap_test(
     seed: int = 0,
 ) -> Tuple[float, float, float]:
     """Compute paired bootstrap difference and 95% CI for macro_f1(adapter) - macro_f1(zero_shot)."""
-    n_samples = len(y_true)
-    diff = macro_f1(y_true, y_adapter, num_classes) - macro_f1(y_true, y_zero_shot, num_classes)
-    rng = np.random.default_rng(seed)
-    deltas = np.zeros(n_resamples, dtype=np.float64)
-    for b in range(n_resamples):
-        idx = rng.choice(n_samples, size=n_samples, replace=True)
-        deltas[b] = macro_f1(y_true[idx], y_adapter[idx], num_classes) - macro_f1(y_true[idx], y_zero_shot[idx], num_classes)
-    return float(diff), round(float(np.percentile(deltas, 2.5)), 4), round(float(np.percentile(deltas, 97.5)), 4)
-
+    return paired_bootstrap_macro_f1_diff(y_true, y_adapter, y_zero_shot, num_classes, n_resamples, seed)
 
 def evaluate_stec_probe(
     stec_samples: List[VideoSample],
