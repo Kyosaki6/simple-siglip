@@ -11,16 +11,43 @@ NCKH/
 ├── src/
 │   ├── video_processor.py   # Trích xuất frame theo FPS & timestamp, trích đoạn clip
 │   ├── siglip_engine.py     # Wrapper SigLIP (AutoProcessor, AutoModel)
-│   └── video_search.py      # Bộ máy tìm kiếm và phân loại video
+│   ├── video_search.py      # Bộ máy tìm kiếm và phân loại video
+│   ├── features.py          # Cache embedding nguyên tử, có thể resume (.npz)
+│   ├── heads.py             # Linear adapter head & prompt ensembling
+│   ├── dataset.py           # Manifest camera giám sát, chuẩn hoá NFC, chia nhóm
+│   ├── metrics.py           # Macro-F1, bootstrap CI, Wilson CI
+│   └── synthetic.py         # Sinh video benchmark / dummy
 ├── tests/
-│   └── test_pipeline.py     # Unit test tự động
+│   ├── test_unit.py         # Unit test nhanh (stub, không tải model)
+│   ├── test_pipeline.py     # Integration test với trọng số SigLIP thật
+│   ├── test_heads.py        # Test adapter head
+│   └── test_evaluate_real.py
 ├── sample_data/             # Chứa video mẫu & benchmark
-├── evaluate.py              # Script chạy full benchmark đánh giá mô hình
-├── eval_results.json        # Dữ liệu kết quả benchmark chi tiết dạng JSON
+├── checkpoints/             # Adapter đã huấn luyện (adapter_msad_base224.pt)
+├── evaluate.py              # Benchmark tổng hợp (truy xuất, zero-shot, FPS ablation)
+├── evaluate_real.py         # Đánh giá MSAD 5-fold + STEC probe
+├── eval_results.json        # Kết quả benchmark tổng hợp (JSON)
+├── eval_real_results.json   # Kết quả đánh giá camera giám sát thực tế (JSON)
 ├── app.py                   # Giao diện Web trực quan Gradio
 ├── main.py                  # Script CLI chạy thử nghiệm
 └── requirements.txt
 ```
+
+## Tóm tắt kết quả & giới hạn
+
+| Hạng mục | Kết quả | Mức tin cậy |
+|---|---|---|
+| Truy xuất khoảnh khắc (video tổng hợp, 24 query) | R@1 = 87.50% | **Thấp**: Wilson 95% CI [69.0%, 95.7%]; cảnh tổng hợp, query trùng từ vựng với tên cảnh |
+| Zero-shot cảnh tổng hợp (8 cảnh) | Top-1 = 100% | **Thấp**: 8 cảnh màu/chủ đề rất khác nhau, không đại diện cho dữ liệu thực |
+| Camera giám sát MSAD (11 lớp, 240 video) | Macro-F1: 12.5% → 23.4% (prompt-ensemble) / 20.0% (adapter) | **Trung bình**: CI có, nhưng giá trị tuyệt đối còn thấp |
+| Chuyển giao STEC (11 video ánh xạ được) | Zero-shot 18.2%, adapter 9.1% | **Rất thấp**: n nhỏ, chỉ mang tính thăm dò |
+
+**Giới hạn chính (đọc trước khi trích dẫn số liệu):**
+- Macro-F1 20–23% trên MSAD **chưa đủ dùng cho giám sát thực tế**. Các lớp an ninh quan trọng như `Assault`, `Shooting` có F1 = 0 ở cả prompt-ensemble lẫn adapter; `Fighting` có F1 = 0 ở cả hai phương pháp này.
+- Linear Adapter có F1 = 0 trên 7/11 lớp (Assault, Explosion, Fighting, Object_falling, Shooting, Vandalism, Water_incident): đầu phân loại dồn dự đoán vào một số ít lớp.
+- Adapter **không chuyển giao** sang STEC (1/11 = 9.09%, ngang mức ngẫu nhiên với 11 lớp) và kém zero-shot ngoài miền. Nhiều khả năng adapter học đặc trưng góc camera/nền của MSAD.
+- Prompt-Ensemble (không cần huấn luyện) cải thiện **có ý nghĩa thống kê** so với Zero-Shot (+10.85%, CI [+5.27%, +15.85%]). Adapter so với Prompt-Ensemble: −3.39%, CI [−8.97%, +2.37%] chứa 0, tức **không phân biệt được**; Adapter không có lợi thế rõ ràng so với phương pháp không cần huấn luyện.
+- Tất cả số liệu là một lần chạy (`seed = 0`), không có phương sai giữa các lần chạy hay giữa các fold.
 
 ## Hướng dẫn cài đặt & sử dụng
 
@@ -67,21 +94,21 @@ python3 evaluate_real.py
 
 ## Kết quả đánh giá mô hình toàn diện (Full Model Evaluation)
 
-Thực nghiệm đo lường hiệu năng trên mô hình `google/siglip-base-patch16-224` (203.2M tham số) với video benchmark đa miền gồm 8 cảnh trực quan khác biệt, 24 truy vấn mô tả ngôn ngữ tự nhiên và 4 nhãn âm tính (distractors), sử dụng dữ liệu thị giác thực tế không có chữ chèn (`clean_no_overlay`).
+Thực nghiệm đo lường hiệu năng trên mô hình `google/siglip-base-patch16-224` (203.2M tham số) với video benchmark đa miền gồm 8 cảnh trực quan khác biệt, 24 truy vấn mô tả ngôn ngữ tự nhiên và 4 nhãn âm tính (distractors), sử dụng video tổng hợp (màu/hoạ tiết sinh bằng mã) không có chữ chèn (`clean_no_overlay`).
+
+> **Lưu ý về độ tin cậy**: đây là benchmark tổng hợp nhỏ (n = 24 query, 8 cảnh có màu sắc rất khác nhau). Nhiều query dùng lại từ vựng của tên cảnh (ví dụ *"green forest trees"* so với *"lush green forest trees"*), nên kết quả phản ánh khả năng khớp từ khoá-màu hơn là hiểu ngữ nghĩa. Khoảng tin cậy rộng: chênh lệch 87.5% và 100% giữa các mức FPS chỉ tương ứng 3 query.
 
 ### 1. Hiệu năng truy xuất khoảnh khắc (Text-to-Moment Retrieval)
 
 | Metric | Giá trị | Giải thích |
 |---|---|---|
-| **Recall@1 (R@1)** | **87.50%** (21/24) | Tỷ lệ timestamp dự đoán top-1 rơi trúng đoạn video mục tiêu $[t_{\text{start}}, t_{\text{end}})$ |
+| **Recall@1 (R@1)** | **87.50%** (21/24), Wilson 95% CI [69.0%, 95.7%] | Tỷ lệ timestamp dự đoán top-1 rơi trúng đoạn video mục tiêu $[t_{\text{start}}, t_{\text{end}})$ |
 | **Recall@3 (R@3)** | **91.67%** (22/24) | Tỷ lệ tìm thấy đoạn mục tiêu trong top 3 kết quả |
 | **Recall@5 (R@5)** | **91.67%** (22/24) | Tỷ lệ tìm thấy đoạn mục tiêu trong top 5 kết quả |
 | **Mean Reciprocal Rank (MRR)** | **0.8958** | Thứ hạng nghịch đảo trung bình của kết quả đúng |
 | **Mean Absolute Error (MAE to Interval)** | **1.12s** | Độ lệch thời gian trung bình đến khoảng $[t_{\text{start}}, t_{\text{end}})$ (0.0s nếu trúng trong phân đoạn) |
 | **Mean Absolute Error (MAE to Center)** | **2.08s** | Độ lệch thời gian trung bình so với tâm đối xứng của phân đoạn |
-| **Hit Rate ($\Delta t_{\text{interval}} = 0.0\text{s}$)** | **87.50%** (21/24) | Tỷ lệ timestamp dự đoán rơi chính xác vào phân đoạn mục tiêu |
-| **Hit Rate ($\Delta t_{\text{interval}} \le 1.0\text{s}$)** | **87.50%** (21/24) | Tỷ lệ khoảng cách tới đoạn mục tiêu $\le 1.0$ giây |
-| **Hit Rate ($\Delta t_{\text{interval}} \le 2.0\text{s}$)** | **87.50%** (21/24) | Tỷ lệ khoảng cách tới đoạn mục tiêu $\le 2.0$ giây |
+| **Hit Rate ($\Delta t_{\text{interval}} \le 0 / 1 / 2\text{s}$)** | **87.50%** (21/24) | Ba ngưỡng cho cùng một giá trị: 3 query sai đều lệch xa hơn 2 giây khỏi đoạn mục tiêu, nên không có ca "suýt trúng" |
 | **Hit Rate ($\Delta t_{\text{center}} \le 1.0\text{s}$)** | **54.17%** (13/24) | Tỷ lệ sai số so với tâm đoạn clip $\le 1.0$ giây |
 | **Hit Rate ($\Delta t_{\text{center}} \le 2.0\text{s}$)** | **87.50%** (21/24) | Tỷ lệ sai số so với tâm đoạn clip $\le 2.0$ giây |
 | **Độ trễ trung bình mỗi truy vấn** | **477.54 ms** | Đo lường thực tế end-to-end trên CPU (gồm text encoding ~263.27 ms và ranking ma trận) |
@@ -109,14 +136,18 @@ Thực nghiệm đo lường hiệu năng trên mô hình `google/siglip-base-pa
 |---|---|---|
 | **Scene Top-1 Accuracy** | **100.00%** (8/8) | Tất cả các phân đoạn đều nhận dạng đúng lớp top-1 |
 | **Scene Top-3 Accuracy** | **100.00%** (8/8) | Lớp chuẩn luôn nằm trong top 3 dự đoán |
-| **Average True Label Score** | **-0.0357** | Điểm tương đồng Cosine trung bình của các nhãn thực tế |
-| **Average Distractor Score** | **-0.0499** | Điểm tương đồng Cosine trung bình của các nhãn gây nhiễu |
-| **Semantic Separation Margin** | **+0.0142** | Khoảng cách phân tách ngữ nghĩa Cosine giữa nhãn thật và nhãn giả |
+| **Average True Label Score (toàn video)** | **-0.0357** | Cosine trung bình của 8 nhãn cảnh thật, **tính trên toàn bộ 24 frame** (mỗi nhãn chỉ khớp 3 s, nên bị pha loãng bởi 7 cảnh còn lại) |
+| **Average Distractor Score (toàn video)** | **-0.0499** | Cosine trung bình của 4 nhãn gây nhiễu, cũng tính trên toàn video |
+| **Semantic Separation Margin (toàn video)** | **+0.0142** | Hiệu hai dòng trên. Margin nhỏ vì phép tính toàn video làm loãng tín hiệu |
+| **Average True Label Score (theo phân cảnh)** | **+0.0404** | Cosine của nhãn đúng, tính chỉ trên frame của cảnh tương ứng (trung bình 8 cảnh, từ `scene_details`) |
+| **Average Margin vs. top nhãn sai (theo phân cảnh)** | **+0.0498** | Cosine nhãn đúng trừ cosine của nhãn sai cao nhất, trung bình 8 cảnh; dương ở cả 8/8 cảnh |
 | **Native SigLIP Sigmoid Probability (True - Scene)** | **0.58%** | Xác suất Sigmoid cục bộ theo phân cảnh ($\sigma(\tau \mathbf{u}^\top \mathbf{v} + b)$) |
-| **Native SigLIP Sigmoid Probability (False - Scene)** | **0.00%** | Các nhãn âm tính bị triệt tiêu hoàn toàn về 0 |
+| **Native SigLIP Sigmoid Probability (False - Scene)** | **0.00%** | Nhãn sai cao nhất cũng ≈ 0 |
 | **Native SigLIP Sigmoid Probability (True - Global Video)** | **0.04%** | Xác suất Sigmoid trung bình trên toàn bộ video |
-| **Native SigLIP Sigmoid Probability (False - Global Video)** | **0.00%** | Nhãn âm tính trên toàn bộ video triệt tiêu về 0 |
+| **Native SigLIP Sigmoid Probability (False - Global Video)** | **0.00%** | Nhãn gây nhiễu ≈ 0 |
 | **Global Probability Separation Margin** | **+0.04%** | Khoảng cách phân tách xác suất toàn cục |
+
+> **Cảnh báo về xác suất Sigmoid**: nhãn đúng chỉ đạt 0.58% (theo cảnh) và 0.04% (toàn video), tức xác suất **không được hiệu chuẩn** ở thang tuyệt đối trên dữ liệu này (với bias $b = -12.93$, phần lớn cặp ảnh-văn bản bị đẩy về gần 0). Việc nhãn sai ≈ 0 **không** phải điểm mạnh vì nhãn đúng cũng ≈ 0. Chỉ nên dùng **thứ hạng** (top-1/top-3) và cosine, không dùng ngưỡng xác suất tuyệt đối.
 
 ---
 
@@ -130,7 +161,7 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 | **1.0 FPS** | 24 frames | 26.11s (trích xuất 0.16s, mã hoá 25.95s) | 0.92 frames/s | **87.50%** | **1.12s** | **2.08s** |
 | **2.0 FPS** | 48 frames | 52.31s (trích xuất 0.33s, mã hoá 51.98s) | 0.92 frames/s | **100.00%** | **0.00s** | **1.19s** |
 
-> **Nhận xét thực nghiệm**: Mức lấy mẫu **1.0 FPS** mang lại sự cân bằng tối ưu giữa thời gian lập chỉ mục (~26.1s trên CPU) và độ chính xác phân loại/định vị ($R@1 = 87.50\%$). Khi cần độ chính xác tuyệt đối không sai lệch biên ($R@1 = 100.00\%, \text{MAE}_{\text{interval}} = 0.00\text{s}$), mức **2.0 FPS** là lựa chọn phù hợp với chi phí tính toán tăng gấp đôi.
+> **Nhận xét thực nghiệm**: Giữa **0.5 FPS** và **1.0 FPS**, Recall@1 giống hệt nhau (87.50%) và MAE chênh không đáng kể (1.08s so với 1.12s), trong khi 0.5 FPS lập chỉ mục nhanh hơn ~2.4 lần (11.09s so với 26.11s). Theo chính số liệu này, **0.5 FPS là điểm cân bằng tốt nhất** trên video benchmark. Mức **2.0 FPS** đạt R@1 = 100.00% và MAE$_{\text{interval}}$ = 0.00s với chi phí gấp đôi 1.0 FPS, nhưng chênh lệch chỉ là 3/24 query nên **chưa đủ cơ sở thống kê** để kết luận 2.0 FPS thực sự tốt hơn. Các cảnh dài 3s nên mẫu thưa 0.5 FPS vẫn có ≥ 1 frame mỗi cảnh; với video thật có sự kiện ngắn hơn, 0.5 FPS có thể bỏ lỡ sự kiện.
 
 ---
 
@@ -141,9 +172,9 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 - **Logit Scale ($\tau$)**: 117.33 | **Logit Bias ($b$)**: -12.93
 - **Môi trường thực thi**: CPU (torch.float32)
 - **Tốc độ trích xuất khung hình**: ~7.49 ms / frame (~133.42 frames/giây)
-- **Tốc độ mã hoá hình ảnh**: ~1312.88 ms / frame (~0.76 frames/giây trên CPU)
+- **Tốc độ mã hoá hình ảnh**: ~1312.88 ms / frame (~0.76 frames/giây trên CPU, benchmark tổng hợp; ablation đo 0.92-1.10 frames/giây. Đo trên MSAD nhanh hơn ~5 lần (~3.7 frames/giây) với cùng model và dtype, nguyên nhân chưa được điều tra, xem mục thực tế bên dưới)
 - **Tốc độ mã hoá văn bản**: ~263.27 ms / query
-- **Độ trễ truy vấn end-to-end trung bình**: ~477.54 ms (thực tế đo lường gồm text encoding + vector similarity ranking; phép tính nhân ma trận vector đơn thuần mất $<2$ ms)
+- **Độ trễ truy vấn end-to-end trung bình**: ~477.54 ms (gồm text encoding ~263 ms + ranking; phép nhân ma trận mất $<2$ ms; ~210 ms còn lại thuộc pipeline truy vấn nhưng chưa được profile riêng)
 
 > ### ⚠️ Ghi chú lịch sử về hiện tượng rò rỉ nhãn văn bản (Historical Note on OCR Text Leakage)
 > Trong báo cáo sơ bộ ban đầu, hệ thống ghi nhận kết quả Recall@1 đạt **100.00%** và Hit Rate đạt **100.00%** ngay cả ở tần số thấp 0.5 FPS. Qua kiểm toán mã nguồn thực nghiệm, nguyên nhân của con số 100% hoàn hảo này đến từ **hiện tượng rò rỉ nhãn OCR**: hàm sinh video giả lập ban đầu đã dùng `cv2.putText()` vẽ trực tiếp chuỗi tên danh mục (`category`) bằng chữ lớn lên bề mặt frame. Vì mô hình SigLIP được huấn luyện trên cặp hình ảnh - văn bản web đa phương thức có khả năng nhận dạng ký tự (OCR), mô hình đã trực tiếp "đọc" chữ viết trên ảnh thay vì trích xuất đặc trưng thị giác (màu sắc, cấu trúc không gian).
@@ -153,7 +184,7 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 ## Điểm khác biệt kỹ thuật của SigLIP so với CLIP
 
 - **Mất mát Sigmoid (BCE Loss)**: Thay vì dùng Softmax chuẩn hoá trên toàn bộ batch (đòi hỏi batch size cực lớn và global communication), SigLIP coi mỗi cặp ảnh-văn bản là một bài toán phân loại nhị phân độc lập.
-- **Hiệu quả cao khi scale**: Tối ưu tốc độ huấn luyện và bộ nhớ, chất lượng embedding mạnh hơn CLIP ở cùng quy mô tham số.
+- **Hiệu quả khi scale**: Tối ưu tốc độ huấn luyện và bộ nhớ theo bài báo gốc SigLIP. Dự án này **không** thực hiện so sánh trực tiếp với CLIP nên không có số liệu nào ở đây để khẳng định SigLIP tốt hơn.
 
 ---
 
@@ -172,7 +203,17 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 - **Kiểm định thống kê Bootstrap ghép cặp (Paired Bootstrap 95% CI)**:
   - Khoảng tin cậy 95% của độ chênh lệch Macro-F1 $(\text{Adapter} - \text{Zero-Shot})$: **[0.0242, 0.1232]** ($[+2.42\%, +12.32\%]$).
   - Vì ngưỡng dưới $0.0242 > 0$, mức cải thiện mang ý nghĩa thống kê ở mức $\alpha = 0.05$.
-  - **Kết luận chính thức (Formal Verdict)**: `gain` (xác nhận cải thiện có ý nghĩa thống kê vượt trội so với baseline Zero-Shot).
+  - **Kết luận chính thức (Formal Verdict)**: `gain` (chỉ cho so sánh Adapter so với Zero-Shot).
+  - **Các so sánh bootstrap ghép cặp khác** (1000 resample, `seed = 0`, trong `pairwise_bootstrap` của `eval_real_results.json`):
+
+    | So sánh | Chênh Macro-F1 | 95% CI | Có ý nghĩa? |
+    |---|---|---|---|
+    | Adapter − Zero-Shot | +0.0746 | [+0.0242, +0.1232] | Có |
+    | Prompt-Ensemble − Zero-Shot | +0.1085 | [+0.0527, +0.1585] | Có |
+    | Adapter − Prompt-Ensemble | −0.0339 | [−0.0897, +0.0237] | Không (CI chứa 0) |
+
+  - **Diễn giải**: cả hai phương pháp đều tốt hơn Zero-Shot, nhưng không có bằng chứng Adapter tốt hơn Prompt-Ensemble (điểm số còn thấp hơn). Với chi phí thấp hơn (không cần huấn luyện, không cần nhãn) và khả năng chuyển giao tốt hơn, Prompt-Ensemble là lựa chọn thực dụng hơn trên dữ liệu này.
+  - **Lưu ý selection bias**: 4 mẫu prompt (`DEFAULT_TEMPLATES` trong `src/heads.py`) được cố định trong mã nguồn; cần xác nhận chúng không được chọn sau khi xem kết quả MSAD.
 
 ### 2. Chi tiết hiệu năng theo từng lớp bất thường (Per-Class F1 Score)
 
@@ -205,9 +246,11 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 | `theft` | Robbery | 2 | 100.00% (2/2) [34.24%, 100.00%] | 0.00% (0/2) [0.00%, 65.76%] |
 | **Tổng các lớp ánh xạ** | — | **11** | **18.18% (2/11)** | **9.09% (1/11)** |
 
+> **Diễn giải**: Điểm zero-shot 2/11 hoàn toàn đến từ lớp `theft` với n = 2. Adapter đạt 1/11 = 9.09%, ngang mức ngẫu nhiên (1/11 với 11 lớp) và thấp hơn zero-shot, tức adapter huấn luyện trên MSAD **không khái quát hoá** sang STEC. Tất cả khoảng Wilson chồng lấn mạnh nên không thể khẳng định phương pháp nào tốt hơn.
+
 ### 4. Thời gian thực thi & Hiệu năng phần cứng (Hardware Runtime & Latency)
 
-- **Thời gian trích xuất đặc trưng**: ~5.7s / video (~0.27s / frame trên CPU với `torch.float32`; tổng thời gian xử lý 5,331 frames của 240 video là ~1,439s).
+- **Thời gian trích xuất đặc trưng**: ~6.0s / video (~0.27s / frame trên CPU với `torch.float32`; tổng thời gian xử lý 5,331 frames của 240 video là ~1,439s, tức 1,439 / 240 ≈ 6.0s).
 - **Thời gian huấn luyện Linear Adapter**: **~5.0s** cho toàn bộ 240 video trên CPU (200 epochs tối ưu hóa L-BFGS trên các vector đặc trưng đã cache).
 - **Độ trễ suy luận (Inference Latency)**: **< 2 ms** trên mỗi video (thực hiện phép nhân ma trận qua linear head trên vector embedding mean-pooled).
 
