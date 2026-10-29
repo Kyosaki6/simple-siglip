@@ -17,6 +17,8 @@ from src.video_processor import VideoProcessor
 
 logger = logging.getLogger(__name__)
 
+CACHE_FORMAT_VERSION: int = 1
+
 
 def sanitize_model_name(model_name: str) -> str:
     """Sanitize model identifier for filesystem paths."""
@@ -63,6 +65,9 @@ def _validate_and_load_cache(
             if any(k not in data for k in keys):
                 raise KeyError("Missing required keys in cache")
 
+            if "format_version" in data and int(data["format_version"]) != CACHE_FORMAT_VERSION:
+                raise ValueError(f"Unsupported cache format_version {int(data['format_version'])}")
+
             stored_model = str(data["model_name"])
             stored_fps = float(data["target_fps"])
             stored_max = int(data["max_frames"])
@@ -93,13 +98,16 @@ def _validate_and_load_cache(
                 "model_name": stored_model,
                 "cache_hit": True,
             }
-    except (zipfile.BadZipFile, ValueError, KeyError, EOFError, OSError, Exception) as exc:
+    except (zipfile.BadZipFile, ValueError, KeyError, EOFError, OSError) as exc:
+        if isinstance(exc, OSError) and exc.errno is not None:
+            # Real I/O failure (permissions, NFS hiccup): cache may be fine, never delete it.
+            logger.warning("Cannot read cache file %s (%s); re-extracting without removing it.", cache_path, exc)
+            return None
         logger.warning("Invalid or corrupt cache file %s: %s. Removing and re-extracting.", cache_path, exc)
-        if os.path.exists(cache_path):
-            try:
-                os.remove(cache_path)
-            except OSError:
-                pass
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
         return None
 
 
@@ -128,7 +136,7 @@ def _write_cache_atomic(
             model_name=np.array(model_name),
             target_fps=np.float32(target_fps),
             max_frames=np.int64(-1 if max_frames is None else max_frames),
-            format_version=np.int32(1),
+            format_version=np.int32(CACHE_FORMAT_VERSION),
         )
         os.replace(tmp_path, cache_path)
     finally:
@@ -230,13 +238,14 @@ def extract_many(
     engine: SigLIPEngine,
     processor: VideoProcessor,
     cache_dir: str,
-    on_error: Optional[Callable[..., Any]] = None,
+    on_error: Optional[Callable[[str, Exception], Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Extract features for multiple videos, skipping already cached entries.
 
     Continues past single video errors, recording {'error': str(exc)}
-    for failed videos in the returned dictionary.
+    for failed videos in the returned dictionary. ``on_error(path, exc)`` is
+    called for each failure; exceptions raised by the callback propagate.
     """
     results: Dict[str, Dict[str, Any]] = {}
     total = len(video_paths)
@@ -249,10 +258,7 @@ def extract_many(
         except Exception as exc:
             logger.warning("%d/%d %s error: %s", i, total, path, exc)
             if on_error is not None:
-                try:
-                    on_error(path, exc)
-                except TypeError:
-                    on_error(exc)
+                on_error(path, exc)
             results[path] = {"error": str(exc)}
 
     return results

@@ -25,17 +25,32 @@ MAX_UI_FRAMES: int = 3600
 MAX_CLIP_KEEP: int = 8
 MAX_CLIP_AGE_SEC: float = 600.0
 
-_engine_cache: Dict[str, SigLIPEngine] = {}
+MAX_ENGINE_CACHE_SIZE: int = 1
+
+_engine_cache: "OrderedDict[str, SigLIPEngine]" = OrderedDict()
 _engine_lock = threading.Lock()
+_key_locks: Dict[Tuple[str, int, int, float, str], threading.Lock] = {}
+_key_locks_guard = threading.Lock()
 _index_cache: OrderedDict[Tuple[str, int, int, float, str], VideoSearchEngine] = OrderedDict()
 _index_lock = threading.Lock()
 
 
 def get_engine(model_name: str) -> SigLIPEngine:
     with _engine_lock:
-        if model_name not in _engine_cache:
-            _engine_cache[model_name] = SigLIPEngine(model_name=model_name)
-        return _engine_cache[model_name]
+        if model_name in _engine_cache:
+            _engine_cache.move_to_end(model_name)
+            return _engine_cache[model_name]
+        engine = SigLIPEngine(model_name=model_name)
+        _engine_cache[model_name] = engine
+        # Evict least-recently-used backbones so switching models does not accumulate weights.
+        while len(_engine_cache) > MAX_ENGINE_CACHE_SIZE:
+            _engine_cache.popitem(last=False)
+        return engine
+
+
+def _lock_for(key: Tuple[str, int, int, float, str]) -> threading.Lock:
+    with _key_locks_guard:
+        return _key_locks.setdefault(key, threading.Lock())
 
 
 def get_index(video_path: str, fps: float, model_name: str) -> VideoSearchEngine:
@@ -46,23 +61,26 @@ def get_index(video_path: str, fps: float, model_name: str) -> VideoSearchEngine
     st = os.stat(abs_path)
     key = (abs_path, st.st_mtime_ns, st.st_size, float(fps), model_name)
 
-    with _index_lock:
-        if key in _index_cache:
-            searcher = _index_cache[key]
+    # Per-key lock: identical concurrent requests index once; others reuse the result.
+    with _lock_for(key):
+        with _index_lock:
+            if key in _index_cache:
+                _index_cache.move_to_end(key)
+                return _index_cache[key]
+
+        engine = get_engine(model_name)
+        processor = VideoProcessor(target_fps=float(fps))
+        searcher = VideoSearchEngine(engine=engine, processor=processor)
+        if searcher.index_video(abs_path) == 0:
+            raise ValueError(f"Could not extract any frames from {video_path}")
+
+        with _index_lock:
+            _index_cache[key] = searcher
             _index_cache.move_to_end(key)
-            return searcher
-
-    engine = get_engine(model_name)
-    processor = VideoProcessor(target_fps=float(fps))
-    searcher = VideoSearchEngine(engine=engine, processor=processor)
-    if searcher.index_video(abs_path) == 0:
-        raise ValueError(f"Could not extract any frames from {video_path}")
-
-    with _index_lock:
-        _index_cache[key] = searcher
-        _index_cache.move_to_end(key)
-        while len(_index_cache) > MAX_INDEX_CACHE_SIZE:
-            _index_cache.popitem(last=False)
+            while len(_index_cache) > MAX_INDEX_CACHE_SIZE:
+                evicted_key, _ = _index_cache.popitem(last=False)
+                with _key_locks_guard:
+                    _key_locks.pop(evicted_key, None)
 
     return searcher
 

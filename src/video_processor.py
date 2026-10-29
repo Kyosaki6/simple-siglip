@@ -1,13 +1,16 @@
 import math
 import os
+import logging
 import shutil
 import subprocess
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional
 import cv2
-import numpy as np
 from PIL import Image
 
 DEFAULT_FALLBACK_FPS: float = 25.0
+FFMPEG_TIMEOUT_SEC: float = 120.0
+
+logger = logging.getLogger(__name__)
 
 
 class VideoProcessor:
@@ -201,35 +204,38 @@ class VideoProcessor:
             cap.release()
 
         ffmpeg_bin = shutil.which("ffmpeg")
-        if ffmpeg_bin:
-            temp_output = f"{output_path}.tmp_{os.getpid()}.mp4"
-            try:
-                cmd = [
-                    ffmpeg_bin,
-                    "-y",
-                    "-i",
-                    output_path,
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-movflags",
-                    "+faststart",
-                    temp_output,
-                ]
-                proc = subprocess.run(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                if proc.returncode == 0 and os.path.exists(temp_output):
-                    os.replace(temp_output, output_path)
-                else:
-                    if os.path.exists(temp_output):
-                        os.remove(temp_output)
-            except Exception:
-                if os.path.exists(temp_output):
+        if ffmpeg_bin is None:
+            logger.warning(
+                "ffmpeg not found; clip %s kept as mp4v, which many browsers cannot play",
+                output_path,
+            )
+            return output_path
+
+        temp_output = f"{output_path}.tmp_{os.getpid()}.mp4"
+        cmd = [
+            ffmpeg_bin, "-y", "-i", output_path,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            "-f", "mp4", temp_output,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=FFMPEG_TIMEOUT_SEC,
+            )
+            if proc.returncode == 0 and os.path.exists(temp_output):
+                os.replace(temp_output, output_path)
+            else:
+                logger.warning("ffmpeg re-encode failed (rc=%s) for %s; keeping mp4v clip", proc.returncode, output_path)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning("ffmpeg re-encode aborted for %s: %s; keeping mp4v clip", output_path, exc)
+        finally:
+            if os.path.exists(temp_output):
+                try:
                     os.remove(temp_output)
+                except OSError:
+                    pass
 
         return output_path

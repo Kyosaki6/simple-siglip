@@ -1,4 +1,7 @@
-import json, logging, os, uuid
+import json
+import logging
+import os
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -12,6 +15,14 @@ DEFAULT_TEMPLATES: List[str] = [
     "a cctv footage showing {}",
     "a person doing {}",
     "{} in surveillance camera",
+]
+
+# Non-domain control templates: separate "prompt ensembling" from "surveillance wording".
+GENERIC_TEMPLATES: List[str] = [
+    "a photo of {}",
+    "a video frame of {}",
+    "a picture showing {}",
+    "an image of {}",
 ]
 
 
@@ -82,6 +93,18 @@ def encode_prompt_ensemble(labels: List[str], engine: Any, templates: List[str] 
     return torch.stack(rows, dim=0)
 
 
+def balanced_class_weights(labels: np.ndarray, num_classes: int) -> torch.Tensor:
+    """Inverse-frequency class weights n / (K * count_c); absent classes get weight 1."""
+    if num_classes <= 0:
+        raise ValueError(f"num_classes must be positive, got {num_classes}")
+    y = np.asarray(labels, dtype=np.int64).ravel()
+    if len(y) > 0 and ((y < 0).any() or (y >= num_classes).any()):
+        raise ValueError(f"labels must be in range [0, {num_classes - 1}]")
+    counts = np.bincount(y, minlength=num_classes).astype(np.float64)
+    weights = np.where(counts > 0, len(y) / (num_classes * np.maximum(counts, 1.0)), 1.0)
+    return torch.tensor(weights, dtype=torch.float32)
+
+
 def confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int) -> np.ndarray:
     """Compute (num_classes, num_classes) confusion matrix using NumPy."""
     if num_classes <= 0:
@@ -133,7 +156,11 @@ def train_head(
     class_weights: Optional[torch.Tensor] = None,
     init_weight: Optional[torch.Tensor] = None,
 ) -> Tuple[LinearAdapterHead, Dict[str, Any]]:
-    """Train LinearAdapterHead on CPU with early stopping."""
+    """Train LinearAdapterHead on CPU with L-BFGS and early stopping.
+
+    ``class_weights`` rebalances the cross-entropy; ``init_weight`` (num_classes, D)
+    initializes the head, e.g. from text embeddings, with zero bias.
+    """
     torch.manual_seed(seed)
     if features.ndim != 2 or features.shape[0] == 0:
         raise ValueError(f"Expected non-empty 2D features, got {features.shape}")
@@ -200,7 +227,7 @@ def train_head(
                 converged = True
                 break
 
-    if patience_cnt >= patience or (len(train_losses) >= 2 and abs(train_losses[-1] - train_losses[-2]) < 1e-4):
+    if not converged and len(train_losses) >= 2 and abs(train_losses[-1] - train_losses[-2]) < 1e-4:
         converged = True
 
     head.load_state_dict(best_state)

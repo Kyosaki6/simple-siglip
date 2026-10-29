@@ -179,10 +179,15 @@ class TestEvaluateRealPipeline(unittest.TestCase):
             self.assertIn("bootstrap_ci_adapter_minus_zero_shot", res)
             self.assertIn("verdict", res)
             self.assertIn("pairwise_bootstrap", res)
-            self.assertEqual(
-                set(res["pairwise_bootstrap"]),
-                {"prompt_ensemble_minus_zero_shot", "adapter_minus_prompt_ensemble"},
-            )
+            for key in (
+                "prompt_ensemble_minus_zero_shot",
+                "adapter_minus_prompt_ensemble",
+                "adapter_tuned_minus_prompt_ensemble",
+                "prompt_ensemble_minus_generic_ensemble",
+            ):
+                self.assertIn(key, res["pairwise_bootstrap"])
+            self.assertIn(res["strongest_baseline"], ("zero_shot", "prompt_ensemble", "generic_ensemble"))
+            self.assertEqual(res["n_groups"], 6)
             self.assertIn(res["verdict"], ("gain", "no_gain"))
             self.assertIn("stec_cross_probe", res)
             self.assertIn("per_class_metrics", res)
@@ -198,7 +203,7 @@ class TestEvaluateRealPipeline(unittest.TestCase):
             self.assertEqual(saved_json["n_videos"], 12)
 
             # Check checkpoint saved and loadable
-            ckpt_path = os.path.join(ckpt_dir, "adapter_msad_base224.pt")
+            ckpt_path = os.path.join(ckpt_dir, "adapter_msad_base224.npz")
             self.assertTrue(os.path.exists(ckpt_path))
             loaded_head, meta = load_head(ckpt_path)
             self.assertEqual(loaded_head.linear.weight.shape, (3, hidden_size))

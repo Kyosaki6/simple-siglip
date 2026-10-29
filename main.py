@@ -55,7 +55,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--adapter-checkpoint",
         type=str,
         default=None,
-        help="Path to trained linear adapter checkpoint (.pt/.npz)",
+        help="Path to trained linear adapter checkpoint (.npz)",
     )
     parser.add_argument("--fps", type=float, default=1.0, help="Frames sampled per second")
     parser.add_argument("--model", type=str, default="google/siglip-base-patch16-224", help="SigLIP HF model")
@@ -98,7 +98,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     if args.adapter_checkpoint is not None and not os.path.exists(args.adapter_checkpoint):
-        raise FileNotFoundError(f"Adapter checkpoint not found: {args.adapter_checkpoint}")
+        sys.stderr.write(f"Error: Adapter checkpoint not found: {args.adapter_checkpoint}\n")
+        return 2
 
     try:
         print(f"Initializing SigLIP model: {args.model}...")
@@ -111,7 +112,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Indexed {num_frames} frames from video.")
 
         if args.adapter_checkpoint:
-            head, meta = load_head(args.adapter_checkpoint)
+            head, meta = load_head(args.adapter_checkpoint, expected_model_name=args.model)
             class_names: List[str] = meta["class_names"]
             label_map: Dict[str, str] = meta.get("label_map") or {}
 
@@ -178,7 +179,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
 
         return 0
-    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+    except (ValueError, FileNotFoundError, RuntimeError, KeyError) as exc:
         sys.stderr.write(f"Error: {exc}\n")
         return 1
 

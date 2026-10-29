@@ -11,7 +11,7 @@ Core multimodal retrieval and classification pipeline: SigLIP model wrapper, Ope
 | `SearchResult` | `src/video_search.py:12` | Dataclass container for retrieved moment (timestamp, frame_idx, score, video_path) |
 | `VideoSearchEngine` | `src/video_search.py:20` | Orchestrates frame extraction, embedding accumulation, dot-product similarity search |
 | `extract_or_load_features` | `src/features.py:72` | Atomic `.npz` caching under `cache/features/` with SHA-256 keys and corruption detection |
-| `LinearAdapterHead` | `src/heads.py:22` | PyTorch linear adapter layer (`in_features=768, out_features=num_classes`) with L-BFGS/Adam |
+| `LinearAdapterHead` | `src/heads.py:22` | PyTorch linear adapter layer (`in_features=768, out_features=num_classes`) with L-BFGS, optional class weights and text-embedding init |
 | `encode_prompt_ensemble` | `src/heads.py:100` | Multi-template prompt ensembling across canonical surveillance templates with L2 norm |
 | `load_surveillance_manifest`| `src/dataset.py:140` | Scans MSAD & STEC `.mp4` files, NFC path normalization, SHA-256 deduplication |
 | `stratified_group_kfold` | `src/dataset.py:230` | Group-aware stratified cross-validation splitter avoiding camera angle data leakage |

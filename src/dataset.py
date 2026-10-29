@@ -37,6 +37,11 @@ LABEL_MAP: Dict[str, str] = {
     "Security_guard_unprofessional_posture": "Security_guard_unprofessional_posture",
 }
 
+MSAD_CLASSES: Tuple[str, ...] = (
+    "Assault", "Explosion", "Fighting", "Fire", "Object_falling", "People_falling",
+    "Robbery", "Shooting", "Traffic_accident", "Vandalism", "Water_incident",
+)
+
 
 @dataclass(frozen=True)
 class VideoSample:
@@ -109,19 +114,16 @@ def group_by_background_correlation(features: np.ndarray, threshold: float = 0.9
     parent = list(range(n))
 
     def find(i: int) -> int:
-        if parent[i] != i:
-            parent[i] = find(parent[i])
-        return parent[i]
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
 
-    def union(i: int, j: int) -> None:
+    rows, cols = np.nonzero(np.triu(corr > threshold, k=1))
+    for i, j in zip(rows.tolist(), cols.tolist()):
         ri, rj = find(i), find(j)
         if ri != rj:
             parent[max(ri, rj)] = min(ri, rj)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if corr[i, j] > threshold:
-                union(i, j)
 
     return [find(i) for i in range(n)]
 
@@ -151,6 +153,13 @@ def stratified_group_kfold(
         entry["counts"][label_to_idx[lbl]] += 1
 
     n_groups = len(group_map)
+    largest = max(len(e["indices"]) for e in group_map.values())
+    if largest > n_samples / n_splits:
+        logger.warning(
+            "Largest group holds %d of %d samples (> 1/%d): folds will be unbalanced. "
+            "Background grouping may be chaining unrelated cameras; consider a stricter threshold.",
+            largest, n_samples, n_splits,
+        )
     if n_splits > n_groups:
         raise ValueError(f"Cannot have n_splits={n_splits} greater than groups={n_groups}")
 
@@ -232,6 +241,7 @@ def _load_partition(
     source: str,
     workers: int,
     include_unlabeled: bool = False,
+    group_threshold: float = 0.90,
 ) -> Tuple[List[VideoSample], List[VideoSample]]:
     if root_dir is None:
         logger.warning("%s root is None; returning empty list", source.upper())
@@ -260,8 +270,12 @@ def _load_partition(
         rel = os.path.relpath(path, root_dir)
 
         if source == "msad":
-            top_folder = unicodedata.normalize("NFC", Path(rel).parts[0])
-            label = LABEL_MAP.get(top_folder, top_folder)
+            parts = Path(rel).parts
+            top_folder = unicodedata.normalize("NFC", parts[0]) if len(parts) > 1 else ""
+            if top_folder not in MSAD_CLASSES:
+                logger.warning("MSAD video outside a known class folder skipped: %s", path)
+                continue
+            label = LABEL_MAP[top_folder]
         else:
             label = _resolve_stec_label(rel)
             if label is None:
@@ -274,7 +288,7 @@ def _load_partition(
     samples: List[VideoSample] = []
     if valid_items:
         thumbs = np.stack([v[5] for v in valid_items])
-        group_ids = group_by_background_correlation(thumbs, threshold=0.90)
+        group_ids = group_by_background_correlation(thumbs, threshold=group_threshold)
         for (p, lbl, sha, dur, fps, _), gid in zip(valid_items, group_ids):
             samples.append(VideoSample(p, lbl, source, sha, gid, dur, fps))
 
@@ -286,12 +300,13 @@ def load_surveillance_manifest(
     stec_root: Optional[str] = None,
     include_unlabeled: bool = False,
     max_workers: Optional[int] = None,
+    group_threshold: float = 0.90,
 ) -> Dict[str, List[VideoSample]]:
     t_start = time.time()
     workers = max_workers or min(12, (os.cpu_count() or 4) * 2)
 
-    msad_samples, _ = _load_partition(msad_root, "msad", workers, False)
-    stec_samples, unlabeled = _load_partition(stec_root, "stec", workers, include_unlabeled)
+    msad_samples, _ = _load_partition(msad_root, "msad", workers, False, group_threshold)
+    stec_samples, unlabeled = _load_partition(stec_root, "stec", workers, include_unlabeled, group_threshold)
 
     logger.info("Manifest loaded in %.2fs: %d MSAD, %d STEC", time.time() - t_start, len(msad_samples), len(stec_samples))
     manifest: Dict[str, List[VideoSample]] = {"msad": msad_samples, "stec": stec_samples}
