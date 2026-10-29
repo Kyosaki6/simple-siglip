@@ -21,6 +21,7 @@ from src.dataset import (
     group_by_background_correlation,
     stratified_group_kfold,
 )
+from src.features import CACHE_FORMAT_VERSION, _validate_and_load_cache, _write_cache_atomic, extract_many
 from src.synthetic import generate_benchmark_video, generate_dummy_video
 from src.video_processor import VideoProcessor
 from src.video_search import SearchResult, VideoSearchEngine
@@ -404,6 +405,31 @@ class TestClassifyVideoZeroShot(unittest.TestCase):
             self.assertEqual(stub.recorded_texts, raw_labels)
             self.assertEqual(len(rankings_raw), 2)
 
+    def test_template_without_placeholder_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vpath = os.path.join(tmpdir, "v.mp4")
+            _create_synthetic_video(vpath, fps=10.0, duration_sec=0.5)
+            searcher = VideoSearchEngine(engine=StubSigLIPEngine(), processor=VideoProcessor(target_fps=10.0))
+            searcher.index_video(vpath)
+            with self.assertRaises(ValueError):
+                searcher.classify_video_zero_shot(["dog"], template="no placeholder here")
+
+    def test_ranking_uses_unrounded_scores(self) -> None:
+        """Probabilities that round to 0.0 must still be ordered (by unrounded value)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vpath = os.path.join(tmpdir, "v.mp4")
+            _create_synthetic_video(vpath, fps=10.0, duration_sec=0.5)
+            stub = StubSigLIPEngine()
+            stub.logit_bias = torch.tensor(-60.0)
+            searcher = VideoSearchEngine(engine=stub, processor=VideoProcessor(target_fps=10.0))
+            searcher.index_video(vpath)
+            labels = [f"label {i}" for i in range(6)]
+            rankings = searcher.classify_video_zero_shot(labels, template=None)
+            self.assertTrue(all(r["mean_prob"] == 0.0 for r in rankings))
+            _, probs = stub.score_logits(searcher.frame_embeddings, stub.encode_texts(labels))
+            expected = sorted(range(6), key=lambda i: float(probs.mean(dim=0)[i]), reverse=True)
+            self.assertEqual([r["label"] for r in rankings], [labels[i] for i in expected])
+
 
 class TestTextTruncation(unittest.TestCase):
     """Test 7: Offline tokenization contract with max_length=64 truncation."""
@@ -527,6 +553,110 @@ class TestDatasetPureFunctions(unittest.TestCase):
         self.assertEqual(_resolve_stec_label(f"camera_02/{nfd_fall}/clip.mp4"), "people_falling")
 
         self.assertIsNone(_resolve_stec_label("smartbench_test.mp4"))
+
+
+class TestDatasetHardening(unittest.TestCase):
+    def test_grouping_matches_reference_union_find(self) -> None:
+        rng = np.random.default_rng(0)
+        base = rng.standard_normal((5, 64))
+        feats = np.concatenate([b + 0.01 * rng.standard_normal((4, 64)) for b in base])
+        groups = group_by_background_correlation(feats, threshold=0.9)
+        self.assertEqual(len(set(groups)), 5)
+        for k in range(5):
+            self.assertEqual(len(set(groups[4 * k : 4 * k + 4])), 1)
+
+    def test_unknown_msad_folder_skipped(self) -> None:
+        from src.dataset import load_surveillance_manifest
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for folder in ("Fire", "Stray_folder"):
+                os.makedirs(os.path.join(tmpdir, folder))
+                _create_synthetic_video(os.path.join(tmpdir, folder, "a.mp4"), fps=10.0, duration_sec=0.5, width=32, height=24)
+            _create_synthetic_video(os.path.join(tmpdir, "loose.mp4"), fps=10.0, duration_sec=0.7, width=32, height=24)
+            with self.assertLogs("src.dataset", level="WARNING"):
+                manifest = load_surveillance_manifest(msad_root=tmpdir)
+            self.assertEqual({s.label for s in manifest["msad"]}, {"Fire"})
+
+
+class TestBootstrapAndWilson(unittest.TestCase):
+    def test_cluster_bootstrap_wider_than_naive_for_correlated_groups(self) -> None:
+        from src.metrics import paired_bootstrap_macro_f1_diff
+
+        rng = np.random.default_rng(1)
+        n_groups, per = 20, 8
+        groups = np.repeat(np.arange(n_groups), per)
+        y_true = np.repeat(rng.integers(0, 2, n_groups), per)
+        group_ok = np.repeat(rng.random(n_groups) < 0.5, per)  # method A right/wrong per whole group
+        y_a = np.where(group_ok, y_true, 1 - y_true)
+        y_b = y_true.copy()
+        _, lo_n, hi_n = paired_bootstrap_macro_f1_diff(y_true, y_a, y_b, 2, n_resamples=300, seed=0)
+        _, lo_c, hi_c = paired_bootstrap_macro_f1_diff(y_true, y_a, y_b, 2, n_resamples=300, seed=0, groups=groups)
+        self.assertGreater(hi_c - lo_c, hi_n - lo_n)
+
+    def test_wilson_respects_confidence(self) -> None:
+        from src.metrics import wilson_score_interval
+
+        lo95, hi95 = wilson_score_interval(5, 10, 0.95)
+        lo99, hi99 = wilson_score_interval(5, 10, 0.99)
+        self.assertLess(lo99, lo95)
+        self.assertGreater(hi99, hi95)
+        with self.assertRaises(ValueError):
+            wilson_score_interval(5, 10, 1.5)
+
+
+class TestFeatureCacheHardening(unittest.TestCase):
+    def _engine_proc(self) -> Tuple[Any, VideoProcessor]:
+        return StubSigLIPEngine(embed_dim=16), VideoProcessor(target_fps=1.0)
+
+    def _write(self, path: str, engine: Any) -> None:
+        emb = F.normalize(torch.randn(3, 16), dim=-1).numpy()
+        _write_cache_atomic(path, emb, np.array([0.0, 1.0, 2.0]), "v.mp4", 3.0, getattr(engine, "model_name", "stub"), 1.0, None)
+
+    def test_valid_cache_survives_transient_oserror(self) -> None:
+        from unittest.mock import patch
+
+        engine, proc = self._engine_proc()
+        engine.model_name = "stub"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "c.npz")
+            self._write(path, engine)
+            with patch("src.features.np.load", side_effect=PermissionError(13, "denied")):
+                self.assertIsNone(_validate_and_load_cache(path, engine, proc, "v.mp4"))
+            self.assertTrue(os.path.exists(path))
+            self.assertIsNotNone(_validate_and_load_cache(path, engine, proc, "v.mp4"))
+
+    def test_corrupt_cache_removed(self) -> None:
+        engine, proc = self._engine_proc()
+        engine.model_name = "stub"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "c.npz")
+            with open(path, "wb") as f:
+                f.write(b"not a zip")
+            self.assertIsNone(_validate_and_load_cache(path, engine, proc, "v.mp4"))
+            self.assertFalse(os.path.exists(path))
+
+    def test_future_format_version_rejected(self) -> None:
+        engine, proc = self._engine_proc()
+        engine.model_name = "stub"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "c.npz")
+            self._write(path, engine)
+            with np.load(path, allow_pickle=False) as d:
+                payload = {k: d[k] for k in d.files}
+            payload["format_version"] = np.int32(CACHE_FORMAT_VERSION + 1)
+            np.savez(path, **payload)
+            self.assertIsNone(_validate_and_load_cache(path, engine, proc, "v.mp4"))
+
+    def test_on_error_exceptions_not_masked(self) -> None:
+        engine, proc = self._engine_proc()
+        engine.model_name = "stub"
+
+        def bad_callback(path: str, exc: Exception) -> None:
+            raise RuntimeError("callback bug")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(RuntimeError):
+                extract_many([os.path.join(tmpdir, "missing.mp4")], engine, proc, tmpdir, on_error=bad_callback)
 
 
 class TestSyntheticGeneration(unittest.TestCase):

@@ -1,5 +1,5 @@
 torch>=2.0.0
-transformers>=4.40.0
+transformers>=4.56.0
 sentencepiece>=0.2.0
 protobuf>=4.0.0
 opencv-python>=4.8.0

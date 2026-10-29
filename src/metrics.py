@@ -1,5 +1,6 @@
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from statistics import NormalDist
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -18,7 +19,9 @@ def wilson_score_interval(k: int, n: int, confidence: float = 0.95) -> Tuple[flo
     """Calculate Wilson binomial score confidence interval (no scipy/sklearn)."""
     if n <= 0:
         return 0.0, 0.0
-    z = 1.959963984540054 if abs(confidence - 0.95) < 1e-4 else 1.96
+    if not 0.0 < confidence < 1.0:
+        raise ValueError(f"confidence must be in (0, 1), got {confidence}")
+    z = NormalDist().inv_cdf(0.5 + confidence / 2.0)
     p_hat = float(k) / float(n)
     denom = 1.0 + (z**2) / n
     center = (p_hat + (z**2) / (2.0 * n)) / denom
@@ -33,16 +36,42 @@ def paired_bootstrap_macro_f1_diff(
     num_classes: int,
     n_resamples: int = 1000,
     seed: int = 0,
+    groups: Optional[Sequence[int]] = None,
 ) -> Tuple[float, float, float]:
-    """Paired bootstrap difference and 95% CI for macro_f1(y_a) - macro_f1(y_b)."""
+    """Paired bootstrap difference and 95% CI for macro_f1(y_a) - macro_f1(y_b).
+
+    If ``groups`` is given, resample whole groups (cluster bootstrap) so that
+    correlated videos from the same camera stay together; otherwise resample
+    individual samples. Returns (observed_diff, ci_lower, ci_upper).
+    """
+    y_true, y_a, y_b = np.asarray(y_true), np.asarray(y_a), np.asarray(y_b)
     n_samples = len(y_true)
+    if n_samples == 0:
+        raise ValueError("Cannot bootstrap an empty sample")
+    if not (len(y_a) == len(y_b) == n_samples):
+        raise ValueError("y_true, y_a and y_b must have equal length")
+
     diff = macro_f1(y_true, y_a, num_classes) - macro_f1(y_true, y_b, num_classes)
     rng = np.random.default_rng(seed)
     deltas = np.zeros(n_resamples, dtype=np.float64)
-    for b in range(n_resamples):
-        idx = rng.choice(n_samples, size=n_samples, replace=True)
-        deltas[b] = macro_f1(y_true[idx], y_a[idx], num_classes) - macro_f1(y_true[idx], y_b[idx], num_classes)
+
+    if groups is None:
+        for b in range(n_resamples):
+            idx = rng.choice(n_samples, size=n_samples, replace=True)
+            deltas[b] = macro_f1(y_true[idx], y_a[idx], num_classes) - macro_f1(y_true[idx], y_b[idx], num_classes)
+    else:
+        g = np.asarray(groups)
+        if len(g) != n_samples:
+            raise ValueError(f"groups length {len(g)} != n_samples {n_samples}")
+        unique_groups = np.unique(g)
+        members = [np.flatnonzero(g == u) for u in unique_groups]
+        n_groups = len(unique_groups)
+        for b in range(n_resamples):
+            picked = rng.integers(0, n_groups, size=n_groups)
+            idx = np.concatenate([members[k] for k in picked])
+            deltas[b] = macro_f1(y_true[idx], y_a[idx], num_classes) - macro_f1(y_true[idx], y_b[idx], num_classes)
     return float(diff), round(float(np.percentile(deltas, 2.5)), 4), round(float(np.percentile(deltas, 97.5)), 4)
+
 
 def paired_bootstrap_test(
     y_true: np.ndarray,
@@ -51,9 +80,11 @@ def paired_bootstrap_test(
     num_classes: int,
     n_resamples: int = 1000,
     seed: int = 0,
+    groups: Optional[Sequence[int]] = None,
 ) -> Tuple[float, float, float]:
     """Compute paired bootstrap difference and 95% CI for macro_f1(adapter) - macro_f1(zero_shot)."""
-    return paired_bootstrap_macro_f1_diff(y_true, y_adapter, y_zero_shot, num_classes, n_resamples, seed)
+    return paired_bootstrap_macro_f1_diff(y_true, y_adapter, y_zero_shot, num_classes, n_resamples, seed, groups)
+
 
 def evaluate_stec_probe(
     stec_samples: List[VideoSample],
@@ -101,7 +132,10 @@ def evaluate_stec_probe(
             }
 
     return {
-        "disclaimer": "Sample size is small (n < 10 per class, total n=14); results lack statistical significance and are exploratory.",
+        "disclaimer": (
+            f"Sample size is small (n={len(stec_samples)} STEC videos, {total_mapped} mapped); "
+            "results lack statistical significance and are exploratory."
+        ),
         "mapped_classes": active_mapping,
         "per_class": stec_per_class,
         "overall_mapped": {

@@ -39,7 +39,7 @@ SigLIP video search and zero-shot action/scene classification pipeline. Core sta
 | Video decoding & clipping | `src/video_processor.py` | `VideoProcessor`: FPS step sampling, timestamp frame seek |
 | Moment retrieval & indexing | `src/video_search.py` | `VideoSearchEngine`: dot-product similarity, top-k |
 | Embedding cache (.npz) | `src/features.py` | `extract_or_load_features()`: atomic write, corruption check |
-| Adapter head & ensembling | `src/heads.py` | `LinearAdapterHead`: PyTorch L-BFGS/Adam classifier |
+| Adapter head & ensembling | `src/heads.py` | `LinearAdapterHead`: PyTorch L-BFGS classifier (class weights, text-embedding init) |
 | Surveillance dataset & splits | `src/dataset.py` | `load_surveillance_manifest()`, `LABEL_MAP`, group k-fold |
 | Synthetic video generation | `src/synthetic.py` | `generate_dummy_video()`, `generate_benchmark_video()` |
 

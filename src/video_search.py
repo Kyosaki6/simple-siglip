@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
 from src.siglip_engine import SigLIPEngine
@@ -168,8 +166,11 @@ class VideoSearchEngine:
             raise RuntimeError("Index is empty. Call index_video() first.")
 
         if template is not None:
+            if "{}" not in template:
+                raise ValueError(f"template must contain a '{{}}' placeholder, got {template!r}")
+            # A label that already contains "{}" is treated as a ready-made prompt and kept verbatim.
             formatted_labels = [
-                template.format(label) if "{}" not in label else label
+                label if "{}" in label else template.replace("{}", label)
                 for label in candidate_labels
             ]
         else:
@@ -185,19 +186,19 @@ class VideoSearchEngine:
         mean_probs = prob_matrix.mean(dim=0).tolist()
         max_probs = prob_matrix.max(dim=0).values.tolist()
 
-        rankings = []
-        for label, mean_s, max_s, mean_p, max_p in zip(
-            candidate_labels, mean_scores, max_scores, mean_probs, max_probs
-        ):
-            rankings.append(
-                {
-                    "label": label,
-                    "mean_score": round(float(mean_s), 4),
-                    "max_score": round(float(max_s), 4),
-                    "mean_prob": round(float(mean_p), 4),
-                    "max_prob": round(float(max_p), 4),
-                }
-            )
-
-        rankings.sort(key=lambda x: x["mean_prob"], reverse=True)
-        return rankings
+        # Sort on unrounded values: sigmoid probs sit near 0, so rounded ties are common.
+        order = sorted(
+            range(len(candidate_labels)),
+            key=lambda i: (mean_probs[i], mean_scores[i]),
+            reverse=True,
+        )
+        return [
+            {
+                "label": candidate_labels[i],
+                "mean_score": round(float(mean_scores[i]), 4),
+                "max_score": round(float(max_scores[i]), 4),
+                "mean_prob": round(float(mean_probs[i]), 4),
+                "max_prob": round(float(max_probs[i]), 4),
+            }
+            for i in order
+        ]

@@ -58,11 +58,13 @@ class SigLIPEngine:
             )
             features = self.model.get_image_features(**inputs)
             features = self._pool_features(features)
-            features = F.normalize(features, p=2, dim=-1)
+            features = F.normalize(features.float(), p=2, dim=-1)
             all_embeds.append(features.cpu())
 
         if not all_embeds:
-            return torch.empty((0, self.model.config.vision_config.hidden_size))
+            return torch.empty(
+                (0, self.model.config.vision_config.hidden_size), dtype=torch.float32
+            )
 
         return torch.cat(all_embeds, dim=0)
 
@@ -75,7 +77,9 @@ class SigLIPEngine:
             Tensor of shape (M, feature_dim), L2-normalized.
         """
         if not texts:
-            return torch.empty((0, self.model.config.text_config.hidden_size))
+            return torch.empty(
+                (0, self.model.config.text_config.hidden_size), dtype=torch.float32
+            )
 
         inputs = self.processor(
             text=texts,
@@ -86,7 +90,7 @@ class SigLIPEngine:
         ).to(device=self.device)
         features = self.model.get_text_features(**inputs)
         features = self._pool_features(features)
-        features = F.normalize(features, p=2, dim=-1)
+        features = F.normalize(features.float(), p=2, dim=-1)
         return features.cpu()
 
     @torch.no_grad()

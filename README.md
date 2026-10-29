@@ -15,7 +15,7 @@ NCKH/
 │   ├── features.py          # Cache embedding nguyên tử, có thể resume (.npz)
 │   ├── heads.py             # Linear adapter head & prompt ensembling
 │   ├── dataset.py           # Manifest camera giám sát, chuẩn hoá NFC, chia nhóm
-│   ├── metrics.py           # Macro-F1, bootstrap CI, Wilson CI
+│   ├── metrics.py           # Macro-F1, bootstrap CI theo cụm, Wilson CI
 │   └── synthetic.py         # Sinh video benchmark / dummy
 ├── tests/
 │   ├── test_unit.py         # Unit test nhanh (stub, không tải model)
@@ -23,7 +23,7 @@ NCKH/
 │   ├── test_heads.py        # Test adapter head
 │   └── test_evaluate_real.py
 ├── sample_data/             # Chứa video mẫu & benchmark
-├── checkpoints/             # Adapter đã huấn luyện (adapter_msad_base224.pt)
+├── checkpoints/             # Adapter đã huấn luyện (adapter_msad_base224.npz)
 ├── evaluate.py              # Benchmark tổng hợp (truy xuất, zero-shot, FPS ablation)
 ├── evaluate_real.py         # Đánh giá MSAD 5-fold + STEC probe
 ├── eval_results.json        # Kết quả benchmark tổng hợp (JSON)
@@ -39,21 +39,23 @@ NCKH/
 |---|---|---|
 | Truy xuất khoảnh khắc (video tổng hợp, 24 query) | R@1 = 87.50% | **Thấp**: Wilson 95% CI [69.0%, 95.7%]; cảnh tổng hợp, query trùng từ vựng với tên cảnh |
 | Zero-shot cảnh tổng hợp (8 cảnh) | Top-1 = 100% | **Thấp**: 8 cảnh màu/chủ đề rất khác nhau, không đại diện cho dữ liệu thực |
-| Camera giám sát MSAD (11 lớp, 240 video) | Macro-F1: 12.5% → 23.4% (prompt-ensemble) / 20.0% (adapter) | **Trung bình**: CI có, nhưng giá trị tuyệt đối còn thấp |
-| Chuyển giao STEC (11 video ánh xạ được) | Zero-shot 18.2%, adapter 9.1% | **Rất thấp**: n nhỏ, chỉ mang tính thăm dò |
+| Camera giám sát MSAD (11 lớp, 240 video) | Macro-F1: 12.5% (zero-shot) → 23.4% (prompt-ensemble) / 20.0% (adapter cơ bản) / **40.0% (adapter tinh chỉnh)** | **Trung bình**: CI cụm theo camera, nhưng nhóm camera gần như không gộp (xem giới hạn) |
+| Chuyển giao STEC (11 video ánh xạ được) | Zero-shot 18.2%, adapter 0% (0/11) | **Rất thấp**: n nhỏ, chỉ mang tính thăm dò |
 
 **Giới hạn chính (đọc trước khi trích dẫn số liệu):**
-- Macro-F1 20–23% trên MSAD **chưa đủ dùng cho giám sát thực tế**. Các lớp an ninh quan trọng như `Assault`, `Shooting` có F1 = 0 ở cả prompt-ensemble lẫn adapter; `Fighting` có F1 = 0 ở cả hai phương pháp này.
-- Linear Adapter có F1 = 0 trên 7/11 lớp (Assault, Explosion, Fighting, Object_falling, Shooting, Vandalism, Water_incident): đầu phân loại dồn dự đoán vào một số ít lớp.
-- Adapter **không chuyển giao** sang STEC (1/11 = 9.09%, ngang mức ngẫu nhiên với 11 lớp) và kém zero-shot ngoài miền. Nhiều khả năng adapter học đặc trưng góc camera/nền của MSAD.
-- Prompt-Ensemble (không cần huấn luyện) cải thiện **có ý nghĩa thống kê** so với Zero-Shot (+10.85%, CI [+5.27%, +15.85%]). Adapter so với Prompt-Ensemble: −3.39%, CI [−8.97%, +2.37%] chứa 0, tức **không phân biệt được**; Adapter không có lợi thế rõ ràng so với phương pháp không cần huấn luyện.
+- Macro-F1 trong miền (MSAD) cao nhất là 40.0% (adapter tinh chỉnh); phương pháp không cần huấn luyện chỉ đạt 23.4%. Cả hai **chưa đủ dùng cho giám sát thực tế**: `Assault` có F1 = 0 ở mọi phương pháp, `Vandalism` F1 = 0 ở adapter.
+- **Adapter cơ bản** (công thức cũ: khởi tạo ngẫu nhiên, weight decay 1e-2, không cân bằng lớp) có F1 = 0 trên 6/11 lớp và **không** hơn Prompt-Ensemble (−3.39%, CI [−8.22%, +2.49%] chứa 0). **Adapter tinh chỉnh** (khởi tạo bằng text embedding của prompt-ensemble, trọng số lớp cân bằng, weight decay chọn bằng CV trong tập huấn luyện từ lưới {1e-4, 1e-3, 1e-2}) đạt +16.65% so với Prompt-Ensemble (CI [+9.46%, +23.93%]). Công thức tinh chỉnh được cố định trước khi chạy và chỉ chạy một lần; vẫn cần kiểm chứng ngoài MSAD vì STEC cho kết quả 0/11.
+- Adapter **không chuyển giao** sang STEC (0/11, dưới mức ngẫu nhiên 1/11 và dưới zero-shot 2/11, n quá nhỏ để kết luận). Nhiều khả năng adapter học đặc trưng góc camera/nền của MSAD.
+- Prompt-Ensemble cải thiện **có ý nghĩa thống kê** so với Zero-Shot (+10.85%, CI [+5.66%, +15.59%]). Đối chứng mới: bộ prompt **chung** (`GENERIC_TEMPLATES`, không nhắc surveillance/cctv) chỉ +0.68% (CI [−2.78%, +4.02%], không có ý nghĩa). Như vậy mức tăng đến từ **từ ngữ miền giám sát**, không phải từ việc trung bình nhiều prompt; điều này làm rõ rủi ro selection bias (4 mẫu prompt được viết trước khi chạy MSAD nhưng chưa được kiểm chứng độc lập).
+- **Nhóm camera gần như không gộp**: ở ngưỡng tương quan 0.90 có 239 nhóm cho 240 video (nhóm lớn nhất = 2), tức fold gần như không nhóm hoá. Đã chạy lại với ngưỡng 0.6 (223 nhóm, lớn nhất 6) và 0.5 (188 nhóm, lớn nhất 48): adapter tinh chỉnh vẫn 40.5% / 42.4%, nên kết quả không phải do rò rỉ nền ở mức này. Dùng `--group-threshold` để kiểm tra độ nhạy.
+- Khoảng tin cậy dùng **bootstrap theo cụm** (resample theo `group_id`, 1000 lần). Verdict `gain` so với baseline **mạnh nhất** không cần huấn luyện (hiện là Prompt-Ensemble), không còn so với Zero-Shot.
 - Tất cả số liệu là một lần chạy (`seed = 0`), không có phương sai giữa các lần chạy hay giữa các fold.
 
 ## Hướng dẫn cài đặt & sử dụng
 
 ### 1. Cài đặt thư viện
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt   # cần transformers>=4.56
 ```
 
 ### 2. Khởi chạy Giao diện Web (Gradio)
@@ -79,7 +81,7 @@ python3 main.py --video path/to/your_video.mp4 --labels "action movie,sports gam
 
 ### 6. Phân loại video với Linear Adapter đã huấn luyện
 ```bash
-python3 main.py --video sample_data/demo.mp4 --adapter-checkpoint checkpoints/adapter_msad_base224.pt --labels "fighting,theft"
+python3 main.py --video sample_data/demo.mp4 --adapter-checkpoint checkpoints/adapter_msad_base224.npz --labels "fighting,theft"
 ```
 
 ### 7. Chạy đánh giá toàn diện mô hình (Full Evaluation Benchmark)
@@ -89,7 +91,7 @@ python3 evaluate.py
 
 ### 8. Đánh giá trên dữ liệu camera giám sát thực tế (Real Surveillance Benchmark)
 ```bash
-python3 evaluate_real.py
+python3 evaluate_real.py --msad-root /path/to/MSAD --stec-root /path/to/STEC   # hoặc đặt MSAD_ROOT / STEC_ROOT
 ```
 
 ## Kết quả đánh giá mô hình toàn diện (Full Model Evaluation)
@@ -196,45 +198,48 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 
 | Phương pháp | Macro-F1 | Mức tăng so với Zero-Shot | Đánh giá |
 |---|---|---|---|
-| **Zero-Shot Baseline** | **12.53%** (0.1253) | — | Phân loại trực tiếp bằng cosine similarity giữa video embedding và tên nhãn |
-| **Prompt-Ensemble** | **23.38%** (0.2338) | **+10.85%** (+0.1085) | Trung bình L2-normalized embedding qua 4 mẫu prompt giám sát chuẩn |
-| **Linear Adapter (5-fold OOF)** | **19.99%** (0.1999) | **+7.46%** (+0.0746) | Đầu phân loại tuyến tính huấn luyện trên vector video mean-pooled |
+| **Zero-Shot Baseline** | **12.53%** (0.1253) | — | Cosine giữa video embedding và nhãn ("This is a photo of {}.") |
+| **Generic Ensemble (đối chứng)** | **13.21%** (0.1321) | +0.68% (CI [−2.78%, +4.02%]) | Trung bình 4 prompt chung, không nhắc surveillance |
+| **Prompt-Ensemble** | **23.38%** (0.2338) | **+10.85%** (CI [+5.66%, +15.59%]) | Trung bình 4 mẫu prompt giám sát (`DEFAULT_TEMPLATES`) |
+| **Linear Adapter cơ bản (5-fold OOF)** | **19.99%** (0.1999) | **+7.46%** | Khởi tạo ngẫu nhiên, weight decay 1e-2 |
+| **Linear Adapter tinh chỉnh (5-fold OOF)** | **40.03%** (0.4003) | **+27.50%** (CI [+20.95%, +33.37%]) | Khởi tạo từ text embedding, cân bằng lớp, weight decay chọn bằng CV trong |
 
-- **Kiểm định thống kê Bootstrap ghép cặp (Paired Bootstrap 95% CI)**:
-  - Khoảng tin cậy 95% của độ chênh lệch Macro-F1 $(\text{Adapter} - \text{Zero-Shot})$: **[0.0242, 0.1232]** ($[+2.42\%, +12.32\%]$).
-  - Vì ngưỡng dưới $0.0242 > 0$, mức cải thiện mang ý nghĩa thống kê ở mức $\alpha = 0.05$.
-  - **Kết luận chính thức (Formal Verdict)**: `gain` (chỉ cho so sánh Adapter so với Zero-Shot).
-  - **Các so sánh bootstrap ghép cặp khác** (1000 resample, `seed = 0`, trong `pairwise_bootstrap` của `eval_real_results.json`):
+- **Bootstrap ghép cặp theo cụm camera (1000 resample, `seed = 0`)**:
 
-    | So sánh | Chênh Macro-F1 | 95% CI | Có ý nghĩa? |
-    |---|---|---|---|
-    | Adapter − Zero-Shot | +0.0746 | [+0.0242, +0.1232] | Có |
-    | Prompt-Ensemble − Zero-Shot | +0.1085 | [+0.0527, +0.1585] | Có |
-    | Adapter − Prompt-Ensemble | −0.0339 | [−0.0897, +0.0237] | Không (CI chứa 0) |
+  | So sánh | Chênh Macro-F1 | 95% CI | Có ý nghĩa? |
+  |---|---|---|---|
+  | Prompt-Ensemble − Zero-Shot | +0.1085 | [+0.0566, +0.1559] | Có |
+  | Generic-Ensemble − Zero-Shot | +0.0068 | [−0.0278, +0.0402] | Không |
+  | Prompt-Ensemble − Generic-Ensemble | +0.1017 | [+0.0576, +0.1424] | Có |
+  | Adapter cơ bản − Prompt-Ensemble | −0.0339 | [−0.0822, +0.0249] | Không (CI chứa 0) |
+  | Adapter tinh chỉnh − Zero-Shot | +0.2750 | [+0.2095, +0.3337] | Có |
+  | Adapter tinh chỉnh − Prompt-Ensemble | +0.1665 | [+0.0946, +0.2393] | Có |
+  | Adapter tinh chỉnh − Adapter cơ bản | +0.2005 | [+0.1388, +0.2554] | Có |
 
-  - **Diễn giải**: cả hai phương pháp đều tốt hơn Zero-Shot, nhưng không có bằng chứng Adapter tốt hơn Prompt-Ensemble (điểm số còn thấp hơn). Với chi phí thấp hơn (không cần huấn luyện, không cần nhãn) và khả năng chuyển giao tốt hơn, Prompt-Ensemble là lựa chọn thực dụng hơn trên dữ liệu này.
-  - **Lưu ý selection bias**: 4 mẫu prompt (`DEFAULT_TEMPLATES` trong `src/heads.py`) được cố định trong mã nguồn; cần xác nhận chúng không được chọn sau khi xem kết quả MSAD.
+  - **Verdict chính thức**: `gain` (adapter tinh chỉnh so với baseline mạnh nhất = Prompt-Ensemble). Adapter cơ bản: `no_gain`. Trường `verdict_vs_zero_shot` giữ lại phép so cũ (`gain`) chỉ để đối chiếu.
+  - **Lưu ý**: ngưỡng nhóm camera 0.90 gần như không gộp gì (239 nhóm/240 video), xem mục giới hạn. Với CV theo cụm thật sự mạnh hơn, hãy giảm `--group-threshold`.
+  - **Lưu ý selection bias**: 4 mẫu prompt giám sát (`DEFAULT_TEMPLATES` trong `src/heads.py`) cố định trong mã nguồn nhưng chưa được kiểm chứng độc lập; đối chứng `GENERIC_TEMPLATES` cho thấy phần lớn mức tăng đến từ từ ngữ miền giám sát.
 
 ### 2. Chi tiết hiệu năng theo từng lớp bất thường (Per-Class F1 Score)
 
-| Lớp bất thường (MSAD 11 Classes) | Zero-Shot F1 | Prompt-Ensemble F1 | Linear Adapter F1 |
-|---|---|---|---|
-| **Assault** | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) |
-| **Explosion** | 0.00% (0.0000) | 28.57% (0.2857) | 0.00% (0.0000) |
-| **Fighting** | 14.29% (0.1429) | 0.00% (0.0000) | 0.00% (0.0000) |
-| **Fire** | 21.43% (0.2143) | 57.14% (0.5714) | 48.65% (0.4865) |
-| **Object_falling** | 8.00% (0.0800) | 18.18% (0.1818) | 0.00% (0.0000) |
-| **People_falling** | 8.51% (0.0851) | 23.53% (0.2353) | 52.35% (0.5235) |
-| **Robbery** | 28.43% (0.2843) | 37.91% (0.3791) | 67.53% (0.6753) |
-| **Shooting** | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) |
-| **Traffic_accident** | 26.42% (0.2642) | 33.33% (0.3333) | 51.33% (0.5133) |
-| **Vandalism** | 0.00% (0.0000) | 24.00% (0.2400) | 0.00% (0.0000) |
-| **Water_incident** | 30.77% (0.3077) | 34.48% (0.3448) | 0.00% (0.0000) |
-| **Macro-F1 Trung bình** | **12.53% (0.1253)** | **23.38% (0.2338)** | **19.99% (0.1999)** |
+| Lớp bất thường (MSAD 11 Classes) | Zero-Shot | Generic-Ens. | Prompt-Ens. | Adapter cơ bản | Adapter tinh chỉnh |
+|---|---|---|---|---|---|
+| **Assault** | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) |
+| **Explosion** | 0.00% (0.0000) | 0.00% (0.0000) | 28.57% (0.2857) | 0.00% (0.0000) | 24.00% (0.2400) |
+| **Fighting** | 14.29% (0.1429) | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) | 46.15% (0.4615) |
+| **Fire** | 21.43% (0.2143) | 21.43% (0.2143) | 57.14% (0.5714) | 48.65% (0.4865) | 76.60% (0.7660) |
+| **Object_falling** | 8.00% (0.0800) | 14.29% (0.1429) | 18.18% (0.1818) | 0.00% (0.0000) | 22.22% (0.2222) |
+| **People_falling** | 8.51% (0.0851) | 11.76% (0.1176) | 23.53% (0.2353) | 52.35% (0.5235) | 68.89% (0.6889) |
+| **Robbery** | 28.43% (0.2843) | 30.69% (0.3069) | 37.91% (0.3791) | 67.53% (0.6753) | 70.59% (0.7059) |
+| **Shooting** | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) | 0.00% (0.0000) | 28.57% (0.2857) |
+| **Traffic_accident** | 26.42% (0.2642) | 28.57% (0.2857) | 33.33% (0.3333) | 51.33% (0.5133) | 53.33% (0.5333) |
+| **Vandalism** | 0.00% (0.0000) | 12.50% (0.1250) | 24.00% (0.2400) | 0.00% (0.0000) | 0.00% (0.0000) |
+| **Water_incident** | 30.77% (0.3077) | 26.09% (0.2609) | 34.48% (0.3448) | 0.00% (0.0000) | 50.00% (0.5000) |
+| **Macro-F1** | **12.53% (0.1253)** | **13.21% (0.1321)** | **23.38% (0.2338)** | **19.99% (0.1999)** | **40.03% (0.4003)** |
 
 ### 3. Thử nghiệm chuyển giao liên miền trên tập STEC (STEC Cross-Domain Transfer Probe)
 
-Đánh giá thăm dò trên 14 video camera giám sát thực tế từ tập dữ liệu STEC nhằm kiểm nghiệm khả năng khái quát hoá liên miền của mô hình sang môi trường camera giao thông/đô thị tại Việt Nam.
+Đánh giá thăm dò (dùng adapter tinh chỉnh huấn luyện trên toàn bộ MSAD) trên 14 video camera giám sát thực tế từ tập dữ liệu STEC nhằm kiểm nghiệm khả năng khái quát hoá liên miền của mô hình sang môi trường camera giao thông/đô thị tại Việt Nam.
 
 > **Tuyên bố giới hạn mẫu nhỏ (Small-Sample Disclaimer)**:
 > Kích thước mẫu thử nghiệm rất nhỏ ($n < 10$ cho mỗi lớp, tổng $n = 14$ video, trong đó 11 video ánh xạ được sang các lớp MSAD tương ứng). Kết quả chỉ mang tính chất thăm dò khám phá (exploratory probe) và **không có ý nghĩa khẳng định về mặt thống kê**.
@@ -242,16 +247,16 @@ So sánh giữa các mức FPS trích xuất trên video benchmark độ dài 24
 | Hành vi (STEC) | Lớp ánh xạ (MSAD) | Số mẫu ($n$) | Zero-Shot Accuracy (Wilson 95% CI) | Linear Adapter Accuracy (Wilson 95% CI) |
 |---|---|---|---|---|
 | `fighting` | Fighting | 5 | 0.00% (0/5) [0.00%, 43.45%] | 0.00% (0/5) [0.00%, 43.45%] |
-| `people_falling` | People_falling | 4 | 0.00% (0/4) [0.00%, 48.99%] | 25.00% (1/4) [4.56%, 69.94%] |
+| `people_falling` | People_falling | 4 | 0.00% (0/4) [0.00%, 48.99%] | 0.00% (0/4) [0.00%, 48.99%] |
 | `theft` | Robbery | 2 | 100.00% (2/2) [34.24%, 100.00%] | 0.00% (0/2) [0.00%, 65.76%] |
-| **Tổng các lớp ánh xạ** | — | **11** | **18.18% (2/11)** | **9.09% (1/11)** |
+| **Tổng các lớp ánh xạ** | — | **11** | **18.18% (2/11)** | **0.00% (0/11)** |
 
-> **Diễn giải**: Điểm zero-shot 2/11 hoàn toàn đến từ lớp `theft` với n = 2. Adapter đạt 1/11 = 9.09%, ngang mức ngẫu nhiên (1/11 với 11 lớp) và thấp hơn zero-shot, tức adapter huấn luyện trên MSAD **không khái quát hoá** sang STEC. Tất cả khoảng Wilson chồng lấn mạnh nên không thể khẳng định phương pháp nào tốt hơn.
+> **Diễn giải**: Điểm zero-shot 2/11 hoàn toàn đến từ lớp `theft` với n = 2. Adapter (checkpoint tinh chỉnh) đạt 0/11, dưới mức ngẫu nhiên (~1/11 với 11 lớp) và thấp hơn zero-shot, tức adapter huấn luyện trên MSAD **không khái quát hoá** sang STEC. Tất cả khoảng Wilson chồng lấn mạnh nên không thể khẳng định phương pháp nào tốt hơn.
 
 ### 4. Thời gian thực thi & Hiệu năng phần cứng (Hardware Runtime & Latency)
 
 - **Thời gian trích xuất đặc trưng**: ~6.0s / video (~0.27s / frame trên CPU với `torch.float32`; tổng thời gian xử lý 5,331 frames của 240 video là ~1,439s, tức 1,439 / 240 ≈ 6.0s).
-- **Thời gian huấn luyện Linear Adapter**: **~5.0s** cho toàn bộ 240 video trên CPU (200 epochs tối ưu hóa L-BFGS trên các vector đặc trưng đã cache).
+- **Thời gian huấn luyện Linear Adapter**: vài giây mỗi lần huấn luyện trên CPU (L-BFGS trên vector đặc trưng đã cache); công thức tinh chỉnh chạy thêm CV trong 3 fold × 3 giá trị weight decay cho mỗi fold ngoài (chưa đo thời gian riêng).
 - **Độ trễ suy luận (Inference Latency)**: **< 2 ms** trên mỗi video (thực hiện phép nhân ma trận qua linear head trên vector embedding mean-pooled).
 
 > **Tuân thủ quyền riêng tư (Privacy Compliance Guardrail)**: Báo cáo này tuyệt đối không lưu trữ, trích xuất hoặc hiển thị bất kỳ khung hình video, ảnh chụp màn hình hay khuôn mặt cá nhân nào từ các tập dữ liệu camera giám sát thực tế (MSAD, STEC).

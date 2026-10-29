@@ -10,7 +10,9 @@ import torch.nn.functional as F
 
 from src.heads import (
     DEFAULT_TEMPLATES,
+    GENERIC_TEMPLATES,
     LinearAdapterHead,
+    balanced_class_weights,
     confusion_matrix,
     encode_prompt_ensemble,
     load_head,
@@ -227,6 +229,37 @@ class TestSerialization(unittest.TestCase):
             # Classes mismatch raises ValueError
             with self.assertRaises(ValueError):
                 load_head(saved, expected_classes=["a", "b", "c", "d"])
+
+
+class TestClassWeights(unittest.TestCase):
+    def test_balanced_weights_inverse_frequency(self) -> None:
+        w = balanced_class_weights(np.array([0, 0, 0, 1]), 3)
+        self.assertAlmostEqual(float(w[0]), 4 / (3 * 3), places=5)
+        self.assertAlmostEqual(float(w[1]), 4 / (3 * 1), places=5)
+        self.assertEqual(float(w[2]), 1.0)  # absent class
+
+    def test_balanced_weights_validates(self) -> None:
+        with self.assertRaises(ValueError):
+            balanced_class_weights(np.array([0, 5]), 3)
+
+    def test_generic_templates_are_domain_free(self) -> None:
+        self.assertEqual(len(GENERIC_TEMPLATES), len(DEFAULT_TEMPLATES))
+        for t in GENERIC_TEMPLATES:
+            self.assertIn("{}", t)
+            self.assertNotIn("surveillance", t)
+            self.assertNotIn("cctv", t.lower())
+
+    def test_init_weight_and_class_weights_train(self) -> None:
+        torch.manual_seed(0)
+        x = F.normalize(torch.randn(30, 8), dim=-1)
+        y = torch.arange(30) % 3
+        init = F.normalize(torch.randn(3, 8), dim=-1)
+        head, info = train_head(
+            x, y, 3, init_weight=init * 10.0,
+            class_weights=balanced_class_weights(y.numpy(), 3), max_epochs=5,
+        )
+        self.assertEqual(head.linear.weight.shape, (3, 8))
+        self.assertTrue(np.isfinite(info["train_loss"]).all())
 
 
 if __name__ == "__main__":
